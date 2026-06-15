@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.codex/
 
 # C extensions
 *.so
@@ -202,6 +203,11 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
 
 # Ruff stuff:
 .ruff_cache/

@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Heimdall Lambda/API/DynamoDB foundation.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: heimdall
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package.
+  LambdaCodeKey:
+    Type: String
+    Description: S3 key for the Lambda deployment package.
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    Description: JWT signing secret. Use Secrets Manager for production hardening.
+  SeedAdminEmail:
+    Type: String
+    Description: Initial admin email for first-time bootstrap.
+  SeedAdminPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    Description: Initial admin password for first-time bootstrap. Rotate after setup.
+  EcrRepositoryUri:
+    Type: String
+    Default: ""
+    Description: Full ECR repository URI for the sample service. Defaults to this account and region.
+
+Conditions:
+  HasCustomEcrRepositoryUri: !Not [!Equals [!Ref EcrRepositoryUri, ""]]
+
+Resources:
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  DeploymentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: deploymentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deploymentId
+          KeyType: HASH
+
+  DeploymentEventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+
+  LocksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: lockKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: lockKey
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: deployment-center-data
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !Sub "${UsersTable.Arn}/index/*"
+                  - !GetAtt DeploymentsTable.Arn
+                  - !GetAtt DeploymentEventsTable.Arn
+                  - !GetAtt LocksTable.Arn
+        - PolicyName: deployment-center-ecs-ecr
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:RegisterTaskDefinition
+                  - ecs:UpdateService
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-api"
+      Handler: lambda.handler
+      Runtime: nodejs20.x
+      Role: !GetAtt ApiRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      Environment:
+        Variables:
+          DATA_STORE: dynamodb
+          AWS_INTEGRATION: aws
+          STATIC_ASSETS_DIR: public
+          JWT_SECRET: !Ref JwtSecret
+          SEED_ADMIN_EMAIL: !Ref SeedAdminEmail
+          SEED_ADMIN_PASSWORD: !Ref SeedAdminPassword
+          ECR_REPOSITORY_URI: !If
+            - HasCustomEcrRepositoryUri
+            - !Ref EcrRepositoryUri
+            - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/deploy2dev/sample-service"
+          USERS_TABLE_NAME: !Ref UsersTable
+          DEPLOYMENTS_TABLE_NAME: !Ref DeploymentsTable
+          DEPLOYMENT_EVENTS_TABLE_NAME: !Ref DeploymentEventsTable
+          LOCKS_TABLE_NAME: !Ref LocksTable
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${ProjectName}-api"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - "*"
+        AllowOrigins:
+          - "*"
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  ApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "ANY /{proxy+}"
+      Target: !Sub "integrations/${ApiIntegration}"
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+
+Outputs:
+  ApiUrl:
+    Value: !GetAtt HttpApi.ApiEndpoint
+  UsersTableName:
+    Value: !Ref UsersTable
+  DeploymentsTableName:
+    Value: !Ref DeploymentsTable
+  DeploymentEventsTableName:
+    Value: !Ref DeploymentEventsTable
+  LocksTableName:
+    Value: !Ref LocksTable
