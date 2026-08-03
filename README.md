@@ -2,8 +2,6 @@
 
 Web portal for controlled deployments across `dev`, `stage`, and `prod`.
 
-This is not the old Deploy2Dev Slack bot. The Slack bot material under `.codex/` is reference-only prior art.
-
 ## Current Stack
 
 - Frontend: React, Vite, TypeScript
