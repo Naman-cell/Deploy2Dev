@@ -105,4 +105,4 @@ ecr_repository=deploy2dev/sample-service
 - Do not expose tokens to the frontend.
 - Passwords are hashed before storage.
 - Prod deployment is admin-only.
-- The Lambda IAM template is intentionally a foundation; tighten ECR/ECS resource ARNs once exact Skillbrew service mappings are confirmed.
+- The Lambda IAM template is intentionally a foundation; tighten ECR/ECS resource ARNs.
