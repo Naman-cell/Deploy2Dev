@@ -142,6 +142,14 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PassedToService: ecs-tasks.amazonaws.com
+        - PolicyName: deployment-center-self-invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-api"
 
   ApiFunction:
     Type: AWS::Lambda::Function
@@ -150,7 +158,11 @@ Resources:
       Handler: lambda.handler
       Runtime: nodejs20.x
       Role: !GetAtt ApiRole.Arn
-      Timeout: 60
+      # ECS waitForStable can take up to ~300s; the async deployment worker (self-invoked via
+      # LambdaDeploymentTrigger) needs headroom beyond that. The API-Gateway-facing request path
+      # itself now returns in well under API Gateway's 30s hard timeout since POST /deployments
+      # only does beginDeployment synchronously.
+      Timeout: 360
       MemorySize: 512
       Code:
         S3Bucket: !Ref LambdaCodeBucket
@@ -160,6 +172,7 @@ Resources:
           DATA_STORE: dynamodb
           AWS_INTEGRATION: aws
           STATIC_ASSETS_DIR: public
+          SERVICE_CATALOG: sandbox
           JWT_SECRET: !Ref JwtSecret
           SEED_ADMIN_EMAIL: !Ref SeedAdminEmail
           SEED_ADMIN_PASSWORD: !Ref SeedAdminPassword
@@ -171,6 +184,13 @@ Resources:
           DEPLOYMENTS_TABLE_NAME: !Ref DeploymentsTable
           DEPLOYMENT_EVENTS_TABLE_NAME: !Ref DeploymentEventsTable
           LOCKS_TABLE_NAME: !Ref LocksTable
+
+  ApiFunctionEventInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Qualifier: "$LATEST"
+      MaximumRetryAttempts: 0
 
   HttpApi:
     Type: AWS::ApiGatewayV2::Api

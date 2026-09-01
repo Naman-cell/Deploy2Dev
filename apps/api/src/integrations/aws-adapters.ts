@@ -2,6 +2,7 @@ import {
   BatchGetImageCommand,
   DescribeImagesCommand,
   ECRClient,
+  paginateDescribeImages,
   PutImageCommand
 } from "@aws-sdk/client-ecr";
 import {
@@ -13,10 +14,17 @@ import {
   waitUntilServicesStable
 } from "@aws-sdk/client-ecs";
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
-import { classifyReleaseTag } from "@heimdall/shared";
+import { classifyReleaseTag, environmentPointerTags } from "@heimdall/shared";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
+import type { Logger } from "../logger";
 import type { EcsAdapter, RegistryAdapter } from "./types";
+
+/** Page size requested per DescribeImages call. */
+const RELEASES_PAGE_SIZE = 100;
+/** Hard cap on pages fetched per listReleases call, to bound worst-case latency on the
+ * 30s API Gateway path even if ECR ever returned pagination tokens indefinitely. */
+const RELEASES_MAX_PAGES = 50;
 
 function repositoryName(service: DeploymentService): string {
   return service.ecrRepository;
@@ -41,34 +49,87 @@ function isEcrImageNotFound(error: unknown): boolean {
 
 export class AwsRegistryAdapter implements RegistryAdapter {
   private readonly client: ECRClient;
+  private readonly logger: Logger;
 
-  public constructor(config: AppConfig) {
+  public constructor(config: AppConfig, logger: Logger) {
     this.client = new ECRClient({ region: config.awsRegion });
+    this.logger = logger;
   }
 
   public async listReleases(service: DeploymentService): Promise<Release[]> {
-    const result = await this.client.send(
-      new DescribeImagesCommand({
+    const pointerTags = environmentPointerTags(service);
+    const paginator = paginateDescribeImages(
+      { client: this.client, pageSize: RELEASES_PAGE_SIZE, stopOnSameToken: true },
+      {
         repositoryName: repositoryName(service),
         filter: { tagStatus: "TAGGED" }
-      })
+      }
     );
 
-    return (result.imageDetails ?? [])
-      .flatMap((detail) => {
+    const releases: Release[] = [];
+    let pageCount = 0;
+    for await (const page of paginator) {
+      pageCount += 1;
+      for (const detail of page.imageDetails ?? []) {
         const digest = detail.imageDigest;
         if (!digest) {
-          return [];
+          continue;
         }
-        return (detail.imageTags ?? []).map<Release>((tag) => ({
-          tag,
-          digest,
-          pushedAt: detail.imagePushedAt?.toISOString(),
-          source: classifyReleaseTag(tag),
-          isEnvironmentPointer: tag === "dev" || tag === "stage" || tag === "prod"
-        }));
-      })
-      .sort((a, b) => (b.pushedAt ?? "").localeCompare(a.pushedAt ?? ""));
+        for (const tag of detail.imageTags ?? []) {
+          releases.push({
+            tag,
+            digest,
+            pushedAt: detail.imagePushedAt?.toISOString(),
+            source: classifyReleaseTag(tag),
+            isEnvironmentPointer: pointerTags.has(tag)
+          });
+        }
+      }
+      if (pageCount >= RELEASES_MAX_PAGES) {
+        this.logger.warn("listReleases hit the hard page cap; results may be truncated", {
+          serviceId: service.serviceId,
+          repositoryName: repositoryName(service),
+          pageCount,
+          pageSize: RELEASES_PAGE_SIZE
+        });
+        break;
+      }
+    }
+
+    return releases.sort((a, b) => (b.pushedAt ?? "").localeCompare(a.pushedAt ?? ""));
+  }
+
+  public async findRelease(
+    service: DeploymentService,
+    tag: string,
+    digest: string
+  ): Promise<Release | undefined> {
+    const pointerTags = environmentPointerTags(service);
+    try {
+      const result = await this.client.send(
+        new DescribeImagesCommand({
+          repositoryName: repositoryName(service),
+          imageIds: [{ imageDigest: digest }]
+        })
+      );
+      const detail = result.imageDetails?.[0];
+      if (!detail || !detail.imageDigest || !(detail.imageTags ?? []).includes(tag)) {
+        return undefined;
+      }
+
+      return {
+        tag,
+        digest: detail.imageDigest,
+        pushedAt: detail.imagePushedAt?.toISOString(),
+        source: classifyReleaseTag(tag),
+        isEnvironmentPointer: pointerTags.has(tag)
+      };
+    } catch (error) {
+      if (isEcrImageNotFound(error)) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   public async getEnvironmentDigest(
@@ -79,7 +140,7 @@ export class AwsRegistryAdapter implements RegistryAdapter {
       const result = await this.client.send(
         new DescribeImagesCommand({
           repositoryName: repositoryName(service),
-          imageIds: [{ imageTag: environment }]
+          imageIds: [{ imageTag: environmentConfig(service, environment).environmentTag }]
         })
       );
       return result.imageDetails?.[0]?.imageDigest;
@@ -96,6 +157,7 @@ export class AwsRegistryAdapter implements RegistryAdapter {
     environment: Environment,
     imageDigest: string
   ): Promise<void> {
+    const env = environmentConfig(service, environment);
     const batch = await this.client.send(
       new BatchGetImageCommand({
         repositoryName: repositoryName(service),
@@ -116,7 +178,7 @@ export class AwsRegistryAdapter implements RegistryAdapter {
       new PutImageCommand({
         repositoryName: repositoryName(service),
         imageManifest: image.imageManifest,
-        imageTag: environment
+        imageTag: env.environmentTag
       })
     );
   }
@@ -177,7 +239,7 @@ export class AwsEcsAdapter implements EcsAdapter {
       throw new AppError(404, "task_definition_not_found", "Task definition details were not found");
     }
 
-    const nextImage = `${service.ecrRepositoryUri ?? service.ecrRepository}:${environment}`;
+    const nextImage = `${service.ecrRepositoryUri ?? service.ecrRepository}:${env.environmentTag}`;
     const nextContainerDefinitions = taskDefinition.containerDefinitions.map((container) =>
       container.name === service.containerName ? { ...container, image: nextImage } : container
     );

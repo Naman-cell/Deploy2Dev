@@ -1,83 +1,35 @@
-# AWS Sandbox Prerequisites
+# infra/aws
 
-This folder contains a minimal AWS sandbox for testing a future Deploy to Dev application before touching the real organization infrastructure.
+Infrastructure for deploying **Heimdall's control plane** and onboarding SkillBrew app repos.
 
-It creates:
+> The production setup runbook lives in
+> [`docs/skillbrew-production-setup/`](../../docs/skillbrew-production-setup/). Start there.
 
-- One ECR repository for a sample service image.
-- One ECS cluster using EC2 launch type.
-- One EC2 container instance in a small public VPC.
-- Three ECS services, `dev`, `stage`, and `prod`, with placeholder `nginx:alpine` tasks.
-- One public ALB for browser-based sandbox verification.
-- IAM task roles and an ECS instance role.
-- One managed IAM policy that can be attached to the CircleCI identity used for sandbox deploys.
+## Contents
 
-It does not store or create access keys.
+- **`deployment-center-lambda.yml`** — CloudFormation for the Heimdall control plane: the
+  Lambda (API + async worker + bundled web UI), four DynamoDB tables, its IAM role, and the API
+  Gateway HTTP API. This is the **only** stack you deploy for Heimdall itself — it creates no
+  ECS/ALB/ECR (those already exist and are managed via the service catalog). For SkillBrew,
+  scope the IAM per [`docs/skillbrew-production-setup/02-iam-and-permissions.md`](../../docs/skillbrew-production-setup/02-iam-and-permissions.md)
+  and deploy per [`04-deploy-heimdall.md`](../../docs/skillbrew-production-setup/04-deploy-heimdall.md).
 
-## Security Note
+- **`dummy-app/`** — reusable templates for onboarding an application repo's CI to push images
+  to ECR via GitHub OIDC (no long-lived keys):
+  - `github-oidc-ecr-push.yml` — per-repo OIDC push role (matches both classic and GitHub
+    immutable-identifier `sub` claim formats).
+  - `.github/workflows/build-push.yml` — the build-and-push workflow pattern.
+  - `Dockerfile` / `index.html` — a tiny sample app used to validate the pipeline end-to-end.
 
-Do not paste AWS passwords, access keys, session tokens, or secret values into chat, source files, commits, or docs. Configure credentials locally with the AWS CLI, and store CI credentials only in CircleCI project environment variables or contexts.
+  See [`docs/skillbrew-production-setup/05-app-repo-ci-onboarding.md`](../../docs/skillbrew-production-setup/05-app-repo-ci-onboarding.md).
 
-If credentials were exposed, rotate them before continuing.
+## Deploy scripts (`../../scripts/`)
 
-## Provision
+- `package-heimdall-lambda.sh` — build + esbuild-bundle + zip the Lambda artifact (`npm run package:lambda`).
+- `deploy-heimdall-lambda.sh` — upload the artifact to S3 and `cloudformation deploy` the stack.
 
-Configure local AWS credentials first:
+## Security
 
-```bash
-aws configure
-aws sts get-caller-identity
-```
-
-Then deploy the sandbox:
-
-```bash
-AWS_REGION=us-east-1 \
-STACK_NAME=deploy2dev-sandbox \
-PROJECT_NAME=deploy2dev \
-SERVICE_NAME=sample-service \
-./scripts/provision-aws-sandbox.sh
-```
-
-The script prints stack outputs including:
-
-- ECR repository URI
-- ECS cluster name
-- ECS service names
-- CircleCI deploy policy ARN
-
-## CircleCI IAM
-
-For the quick personal-account test, create a dedicated IAM user or role for CircleCI and attach the generated `CircleCiDeployPolicyArn`.
-
-Recommended CircleCI environment variables:
-
-```text
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-AWS_REGION
-AWS_ACCOUNT_ID
-ECR_REPOSITORY_URI
-ECS_CLUSTER_NAME
-ECS_SERVICE_NAME
-ECS_TASK_FAMILY
-ECS_CONTAINER_NAME=app
-```
-
-For stage/prod sandbox checks, use the corresponding `ECS_STAGE_*` and `ECS_PROD_*` values printed by the stack outputs.
-
-For the real organization, prefer OIDC federation from CircleCI to AWS instead of long-lived access keys.
-
-## Delete
-
-```bash
-AWS_REGION=us-east-1 \
-STACK_NAME=deploy2dev-sandbox \
-./scripts/delete-aws-sandbox.sh
-```
-
-If the ECR repository contains pushed images, empty it before deleting the stack.
-
-## Sandbox Security Tradeoff
-
-The sandbox template opens the ECS dynamic host-port range for browser-based ALB/ECS testing. This is for the personal sandbox only. For Skillbrew production, restrict dynamic ports to the ALB security group and use the organization's normal network controls.
+Never paste AWS access keys, secrets, or session tokens into chat, source, commits, or docs. Use
+Secrets Manager / SSM for `JwtSecret` and the seed admin password, and OIDC federation (not
+long-lived keys) for CI. If a credential is ever exposed, rotate it immediately.

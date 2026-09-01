@@ -1,0 +1,522 @@
+[
+  {
+    "serviceId": "django_app",
+    "name": "Django API",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-django_app",
+    "ecrRepository": "skillbrew-be",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-be",
+    "containerName": "django_app",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "django_app",
+        "taskFamily": "skillbrew-dev-django_app",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "django_app",
+        "taskFamily": "skillbrew-staging-django_app",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "django_app",
+        "taskFamily": "skillbrew-staging-django_app",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "django_app",
+        "taskFamily": "skillbrew-prod-django_app",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "ai_interview",
+    "name": "AI Interview",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-ai_interview",
+    "ecrRepository": "skillbrew_ai",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew_ai",
+    "containerName": "ai_interview",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "ai_interview",
+        "taskFamily": "skillbrew-dev-ai_interview",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "ai_interview",
+        "taskFamily": "skillbrew-staging-ai_interview",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "ai_interview",
+        "taskFamily": "skillbrew-staging-ai_interview",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "ai_interview",
+        "taskFamily": "skillbrew-prod-ai_interview",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "resume_analyzer",
+    "name": "Resume Analyzer",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-resume_analyzer",
+    "ecrRepository": "resume-analyzer",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/resume-analyzer",
+    "containerName": "resume_analyzer",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "resume_analyzer",
+        "taskFamily": "skillbrew-dev-resume_analyzer",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "resume_analyzer",
+        "taskFamily": "skillbrew-staging-resume_analyzer",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "resume_analyzer",
+        "taskFamily": "skillbrew-staging-resume_analyzer",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "resume_analyzer",
+        "taskFamily": "skillbrew-prod-resume_analyzer",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "skb_payment",
+    "name": "Payments",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-skb_payment",
+    "ecrRepository": "skb-payments",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skb-payments",
+    "containerName": "skb_payment",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "skb_payment",
+        "taskFamily": "skillbrew-dev-skb_payment",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skb_payment",
+        "taskFamily": "skillbrew-staging-skb_payment",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skb_payment",
+        "taskFamily": "skillbrew-staging-skb_payment",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "skb_payment",
+        "taskFamily": "skillbrew-prod-skb_payment",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "notification-api",
+    "name": "Notification API",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-notification-api",
+    "ecrRepository": "notification-api",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/notification-api",
+    "containerName": "notification-api",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "notification-api",
+        "taskFamily": "skillbrew-dev-notification-api",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "notification-api",
+        "taskFamily": "skillbrew-staging-notification-api",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "notification-api",
+        "taskFamily": "skillbrew-staging-notification-api",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "notification-api",
+        "taskFamily": "skillbrew-prod-notification-api",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "notification-worker",
+    "name": "Notification Worker",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-notification-worker",
+    "ecrRepository": "notification-worker",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/notification-worker",
+    "containerName": "notification-worker",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "notification-worker",
+        "taskFamily": "skillbrew-dev-notification-worker",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "notification-worker",
+        "taskFamily": "skillbrew-staging-notification-worker",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "notification-worker",
+        "taskFamily": "skillbrew-staging-notification-worker",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "notification-worker",
+        "taskFamily": "skillbrew-prod-notification-worker",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "skillbrew-agent",
+    "name": "SkillBrew Agent",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-agent",
+    "ecrRepository": "skillbrew-agent",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-agent",
+    "containerName": "skillbrew-agent",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "skillbrew-agent",
+        "taskFamily": "skillbrew-dev-skillbrew-agent",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-agent",
+        "taskFamily": "skillbrew-staging-skillbrew-agent",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-agent",
+        "taskFamily": "skillbrew-staging-skillbrew-agent",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "skillbrew-agent",
+        "taskFamily": "skillbrew-prod-skillbrew-agent",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "skillbrew-agent-daemon",
+    "name": "Agent Daemon",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-agent-daemon",
+    "ecrRepository": "skillbrew-agent-daemon",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-agent-daemon",
+    "containerName": "skillbrew-agent-daemon",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "skillbrew-agent-daemon",
+        "taskFamily": "skillbrew-dev-skillbrew-agent-daemon",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-agent-daemon",
+        "taskFamily": "skillbrew-staging-skillbrew-agent-daemon",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-agent-daemon",
+        "taskFamily": "skillbrew-staging-skillbrew-agent-daemon",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "skillbrew-agent-daemon",
+        "taskFamily": "skillbrew-prod-skillbrew-agent-daemon",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "skillbrew-reward",
+    "name": "Rewards",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-reward",
+    "ecrRepository": "skillbrew-reward",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-reward",
+    "containerName": "skillbrew-reward",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "skillbrew-reward",
+        "taskFamily": "skillbrew-dev-skillbrew-reward",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-reward",
+        "taskFamily": "skillbrew-staging-skillbrew-reward",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "skillbrew-reward",
+        "taskFamily": "skillbrew-staging-skillbrew-reward",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "skillbrew-reward",
+        "taskFamily": "skillbrew-prod-skillbrew-reward",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "public_app",
+    "name": "Public App",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-public_app",
+    "ecrRepository": "skillbrew-fe",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-fe",
+    "containerName": "public_app",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "public_app",
+        "taskFamily": "skillbrew-dev-public_app",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "public_app",
+        "taskFamily": "skillbrew-staging-public_app",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "public_app",
+        "taskFamily": "skillbrew-staging-public_app",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "public_app",
+        "taskFamily": "skillbrew-prod-public_app",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "developer_app",
+    "name": "Developer App",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-developer_app",
+    "ecrRepository": "skillbrew-app-fe",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-app-fe",
+    "containerName": "developer_app",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "developer_app",
+        "taskFamily": "skillbrew-dev-developer_app",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "developer_app",
+        "taskFamily": "skillbrew-staging-developer_app",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "developer_app",
+        "taskFamily": "skillbrew-staging-developer_app",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "developer_app",
+        "taskFamily": "skillbrew-prod-developer_app",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "organization_app",
+    "name": "Organization App",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-organization_app",
+    "ecrRepository": "skillbrew-org-fe",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-org-fe",
+    "containerName": "organization_app",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "organization_app",
+        "taskFamily": "skillbrew-dev-organization_app",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "organization_app",
+        "taskFamily": "skillbrew-staging-organization_app",
+        "environmentTag": "stg"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "organization_app",
+        "taskFamily": "skillbrew-staging-organization_app",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "organization_app",
+        "taskFamily": "skillbrew-prod-organization_app",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  },
+  {
+    "serviceId": "admin_app",
+    "name": "Admin App",
+    "githubRepository": "Brudite-Pvt-Ltd/TODO-admin_app",
+    "ecrRepository": "skillbrew-fe-admin",
+    "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-fe-admin",
+    "containerName": "admin_app",
+    "environments": {
+      "dev": {
+        "clusterName": "skillbrew-dev-cluster",
+        "serviceName": "admin_app",
+        "taskFamily": "skillbrew-dev-admin_app",
+        "environmentTag": "dev"
+      },
+      "stage": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "admin_app",
+        "taskFamily": "skillbrew-staging-admin_app",
+        "environmentTag": "staging"
+      },
+      "preprod": {
+        "clusterName": "skillbrew-staging-cluster",
+        "serviceName": "admin_app",
+        "taskFamily": "skillbrew-staging-admin_app",
+        "environmentTag": "preprod"
+      },
+      "prod": {
+        "clusterName": "skillbrew-prod-cluster",
+        "serviceName": "admin_app",
+        "taskFamily": "skillbrew-prod-admin_app",
+        "environmentTag": "prod"
+      }
+    },
+    "allowedDeployRolesByEnvironment": {
+      "dev": ["admin", "user"],
+      "stage": ["admin", "user"],
+      "preprod": ["admin"],
+      "prod": ["admin"]
+    }
+  }
+]

@@ -5,7 +5,8 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
-  ScanCommand
+  ScanCommand,
+  type TranslateConfig
 } from "@aws-sdk/lib-dynamodb";
 import type { Deployment, DeploymentEvent } from "@heimdall/shared";
 import { randomUUID } from "node:crypto";
@@ -14,11 +15,23 @@ import type { AppConfig } from "../config";
 import { AppError } from "../errors";
 import type { DataStore, DeploymentLock, StoredUser } from "./types";
 
+// `Deployment` (and `StoredUser`) records commonly carry `undefined` optional fields
+// (e.g. a fresh deployment has no `completedAt`/`errorMessage`/task-definition ARNs yet).
+// The underlying DynamoDB marshaller throws on `undefined` map values unless explicitly
+// told to strip them. Exported so the regression test in dynamodb-store.test.ts exercises
+// this exact config rather than a hand-copied duplicate.
+export const documentClientTranslateConfig: TranslateConfig = {
+  marshallOptions: { removeUndefinedValues: true }
+};
+
 export class DynamoDbStore implements DataStore {
   private readonly client: DynamoDBDocumentClient;
 
   public constructor(private readonly config: AppConfig) {
-    this.client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: config.awsRegion }));
+    this.client = DynamoDBDocumentClient.from(
+      new DynamoDBClient({ region: config.awsRegion }),
+      documentClientTranslateConfig
+    );
   }
 
   public async ensureSeedAdmin(): Promise<void> {

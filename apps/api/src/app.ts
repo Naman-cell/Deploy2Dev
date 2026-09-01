@@ -8,6 +8,7 @@ import { authenticateCredentials, hashPassword, signToken, toPublicUser, verifyT
 import type { AppConfig } from "./config";
 import { AppError, isAppError } from "./errors";
 import type { DeploymentCenterService } from "./deployment-service";
+import type { DeploymentTrigger } from "./deployment-trigger";
 import type { Logger } from "./logger";
 import type { DataStore } from "./store/types";
 
@@ -24,7 +25,8 @@ export function createApp(
   config: AppConfig,
   store: DataStore,
   deploymentCenter: DeploymentCenterService,
-  logger: Logger
+  logger: Logger,
+  trigger: DeploymentTrigger
 ) {
   const app = express();
   app.use(cors({ origin: process.env.CORS_ORIGIN ?? true, credentials: true }));
@@ -149,8 +151,22 @@ export function createApp(
       if (!request.actor) {
         throw new AppError(401, "missing_actor", "Missing authenticated user");
       }
-      const deployment = await deploymentCenter.createDeployment(request.body, request.actor);
-      response.status(201).json(deployment);
+      const deployment = await deploymentCenter.beginDeployment(request.body, request.actor);
+      try {
+        await trigger.trigger("execute-deployment", deployment.deploymentId);
+      } catch (error) {
+        logger.error("failed to trigger deployment worker", {
+          deploymentId: deployment.deploymentId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        // Dispatching the worker failed, so no worker will ever run `executeDeployment` to
+        // release the lock `beginDeployment` acquired or move the record off `pending`. Release
+        // the lock and mark the record `failed` here so a retry isn't 409-blocked and a client
+        // polling GET /deployments/:id doesn't see it stuck at `pending` forever.
+        await deploymentCenter.failDeploymentStart(deployment, "Failed to start deployment worker");
+        throw new AppError(502, "deployment_trigger_failed", "Failed to start deployment worker");
+      }
+      response.status(202).json(deployment);
     } catch (error) {
       next(error);
     }
@@ -183,9 +199,23 @@ export function createApp(
       if (!request.actor) {
         throw new AppError(401, "missing_actor", "Missing authenticated user");
       }
-      response.json(
-        await deploymentCenter.rollback(requireParam(request.params.deploymentId, "deploymentId"), request.actor)
-      );
+      const deploymentId = requireParam(request.params.deploymentId, "deploymentId");
+      const deployment = await deploymentCenter.beginRollback(deploymentId, request.actor);
+      try {
+        await trigger.trigger("execute-rollback", deployment.deploymentId);
+      } catch (error) {
+        logger.error("failed to trigger rollback worker", {
+          deploymentId: deployment.deploymentId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        // Dispatching the worker failed, so no worker will ever run `executeRollback` to release
+        // the lock `beginRollback` acquired or move the record off `running`. Release the lock and
+        // mark the record `failed` here so a retry isn't 409-blocked and a client polling
+        // GET /deployments/:id doesn't see it stuck at `running` forever.
+        await deploymentCenter.failDeploymentStart(deployment, "Failed to start rollback worker");
+        throw new AppError(502, "rollback_trigger_failed", "Failed to start rollback worker");
+      }
+      response.status(202).json(deployment);
     } catch (error) {
       next(error);
     }

@@ -78,6 +78,8 @@ export const api = {
     ),
   deployments: (token: string) =>
     request<{ deployments: Deployment[] }>("/deployments", {}, token).then((body) => body.deployments),
+  deployment: (token: string, deploymentId: string) =>
+    request<Deployment>(`/deployments/${deploymentId}`, {}, token),
   deploy: (
     token: string,
     payload: { serviceId: string; environment: Environment; imageTag: string; imageDigest: string }

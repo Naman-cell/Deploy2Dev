@@ -9,7 +9,7 @@ import type {
   Release,
   User
 } from "@heimdall/shared";
-import { environments } from "@heimdall/shared";
+import { canDeploy, environments } from "@heimdall/shared";
 import { api, ApiError } from "./api";
 import "./styles.css";
 
@@ -23,6 +23,28 @@ interface Session {
 function formatDigest(digest?: string): string {
   if (!digest) return "unknown";
   return digest.length > 22 ? `${digest.slice(0, 18)}...` : digest;
+}
+
+const TERMINAL_STATUSES = new Set(["succeeded", "failed", "rolled_back"]);
+const POLL_INTERVAL_MS = 2500;
+const MAX_POLL_ATTEMPTS = 150; // ~6 minutes, matching the ECS waitForStable budget
+
+// Polls GET /deployments/:id until the deployment reaches a terminal status (or the attempt
+// budget is exhausted), calling `onChanged` after every poll so the dashboard's deployment list
+// stays in sync. Shared by the deploy and rollback flows since both start with a 202 `running`
+// record and need to observe it settle.
+async function pollUntilTerminal(
+  token: string,
+  onChanged: () => Promise<void>,
+  started: Deployment
+): Promise<Deployment> {
+  let final = started;
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS && !TERMINAL_STATUSES.has(final.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    final = await api.deployment(token, started.deploymentId);
+    await onChanged();
+  }
+  return final;
 }
 
 function App() {
@@ -65,7 +87,7 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
         <div>
           <p className="eyebrow">Skillbrew</p>
           <h1>Heimdall</h1>
-          <p className="muted">Controlled deployments for dev, stage, and prod.</p>
+          <p className="muted">Controlled deployments for dev, stage, pre-prod, and prod.</p>
         </div>
         <label>
           Email
@@ -172,15 +194,25 @@ function DeploymentHistory({
   onChanged: () => Promise<void>;
 }) {
   const [busyId, setBusyId] = useState("");
+  const [error, setError] = useState("");
 
   async function rollback(deployment: Deployment) {
     if (!window.confirm(`Rollback ${deployment.serviceName} ${deployment.environment}?`)) {
       return;
     }
     setBusyId(deployment.deploymentId);
+    setError("");
     try {
-      await api.rollback(token, deployment.deploymentId);
-      await onChanged();
+      const started = await api.rollback(token, deployment.deploymentId);
+      const final = await pollUntilTerminal(token, onChanged, started);
+
+      if (!TERMINAL_STATUSES.has(final.status)) {
+        setError("Rollback is still in progress. Check the history view for the latest status.");
+      } else if (final.status === "failed") {
+        setError(final.errorMessage ?? "Rollback failed");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Rollback failed");
     } finally {
       setBusyId("");
     }
@@ -194,6 +226,7 @@ function DeploymentHistory({
           <h1>Deployment History</h1>
         </div>
       </header>
+      {error ? <p className="error">{error}</p> : null}
       <div className="table-wrap">
         <table>
           <thead>
@@ -220,7 +253,9 @@ function DeploymentHistory({
                   <td>{new Date(deployment.startedAt).toLocaleString()}</td>
                   <td>{deployment.serviceName}</td>
                   <td>
-                    <span className={`env ${deployment.environment}`}>{deployment.environment}</span>
+                    <span className={`env ${deployment.environment}`}>
+                      {deployment.environment}
+                    </span>
                   </td>
                   <td>
                     <strong>{deployment.selectedImageTag}</strong>
@@ -236,7 +271,7 @@ function DeploymentHistory({
                       disabled={
                         !deployment.previousTaskDefinitionArn ||
                         busyId === deployment.deploymentId ||
-                        (deployment.environment === "prod" && user.role !== "admin")
+                        !canDeploy(user.role, deployment.environment)
                       }
                       onClick={() => void rollback(deployment)}
                     >
@@ -277,28 +312,42 @@ function DeploymentCenter({
     [releaseDigest, releases]
   );
 
+  const environmentTag = useMemo(
+    () =>
+      services.find((service) => service.serviceId === serviceId)?.environments[environment]
+        ?.environmentTag,
+    [environment, serviceId, services]
+  );
+
   useEffect(() => {
     setServiceId(services[0]?.serviceId ?? "");
   }, [services]);
 
   useEffect(() => {
     if (!serviceId) return;
-    Promise.all([api.releases(token, serviceId, environment), api.current(token, serviceId, environment)])
+    Promise.all([
+      api.releases(token, serviceId, environment),
+      api.current(token, serviceId, environment)
+    ])
       .then(([nextReleases, nextCurrent]) => {
         setReleases(nextReleases);
         setCurrent(nextCurrent);
-        setReleaseDigest(nextReleases.find((release) => !release.isEnvironmentPointer)?.digest ?? "");
+        setReleaseDigest(
+          nextReleases.find((release) => !release.isEnvironmentPointer)?.digest ?? ""
+        );
       })
-      .catch((caught: unknown) => setError(caught instanceof Error ? caught.message : "Load failed"));
+      .catch((caught: unknown) =>
+        setError(caught instanceof Error ? caught.message : "Load failed")
+      );
   }, [environment, serviceId, token]);
 
-  const prodBlocked = environment === "prod" && user.role !== "admin";
+  const deployBlocked = !canDeploy(user.role, environment);
 
   async function deploy() {
     if (!selectedRelease) return;
     if (
       !window.confirm(
-        `Deploy ${selectedRelease.tag} to ${environment}? This will move :${environment} and force ECS deployment.`
+        `Deploy ${selectedRelease.tag} to ${environment}? This will move :${environmentTag ?? "unknown"} and force ECS deployment.`
       )
     ) {
       return;
@@ -306,13 +355,20 @@ function DeploymentCenter({
     setLoading(true);
     setError("");
     try {
-      await api.deploy(token, {
+      const started = await api.deploy(token, {
         serviceId,
         environment,
         imageTag: selectedRelease.tag,
         imageDigest: selectedRelease.digest
       });
-      await onChanged();
+
+      const final = await pollUntilTerminal(token, onChanged, started);
+
+      if (!TERMINAL_STATUSES.has(final.status)) {
+        setError("Deployment is still in progress. Check the history view for the latest status.");
+      } else if (final.status === "failed") {
+        setError(final.errorMessage ?? "Deployment failed");
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Deployment failed");
     } finally {
@@ -365,7 +421,7 @@ function DeploymentCenter({
       </div>
       <div className="summary">
         <div>
-          <span>Current :{environment}</span>
+          <span>Current :{environmentTag ?? "unknown"}</span>
           <strong>{formatDigest(current?.environmentImageDigest)}</strong>
         </div>
         <div>
@@ -379,14 +435,14 @@ function DeploymentCenter({
           <small>{current?.status ?? "unknown"}</small>
         </div>
       </div>
-      {prodBlocked ? (
+      {deployBlocked ? (
         <p className="warning">
-          <Shield size={16} /> Prod deployments are admin-only. You can view prod releases but cannot
-          deploy them.
+          <Shield size={16} /> {environment} deployments are admin-only. You can view {environment}{" "}
+          releases but cannot deploy them.
         </p>
       ) : null}
       {error ? <p className="error">{error}</p> : null}
-      <button disabled={!selectedRelease || loading || prodBlocked} onClick={() => void deploy()}>
+      <button disabled={!selectedRelease || loading || deployBlocked} onClick={() => void deploy()}>
         {loading ? "Deploying..." : `Deploy to ${environment}`}
       </button>
     </section>
@@ -442,7 +498,10 @@ function AdminUsers({ token }: { token: string }) {
         </label>
         <label>
           Role
-          <select value={role} onChange={(event) => setRole(event.target.value as "admin" | "user")}>
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as "admin" | "user")}
+          >
             <option value="user">user</option>
             <option value="admin">admin</option>
           </select>

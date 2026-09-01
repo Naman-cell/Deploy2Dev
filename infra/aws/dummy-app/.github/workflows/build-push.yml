@@ -1,0 +1,83 @@
+name: Build and push dummy app
+
+# NOTE: this workflow lives in infra/aws/dummy-app/.github/workflows/ inside the
+# Heimdall repo as scaffold material. Copy it to .github/workflows/build-push.yml
+# at the root of the standalone dummy-app GitHub repo before it will run there.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint Dockerfile with hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Verify index.html is present
+        run: test -f index.html
+
+  build-and-push:
+    name: Build and push image
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          SAFE_BRANCH="$(echo "${GITHUB_REF_NAME}" | tr -c 'a-zA-Z0-9.-' '-' | tr '[:upper:]' '[:lower:]')"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=branch-${SAFE_BRANCH}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp build metadata into index.html
+        run: |
+          set -euo pipefail
+          sed -i \
+            -e "s/__BUILD_SHA__/${{ steps.tags.outputs.short_sha }}/" \
+            -e "s/__BUILD_DATE__/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" \
+            index.html
+
+      - name: Build image
+        run: |
+          docker build -t app:local .
+
+      - name: Tag and push image
+        env:
+          ECR_REPOSITORY_URI: ${{ vars.ECR_REPOSITORY_URI }}
+          SHA_TAG: ${{ steps.tags.outputs.sha_tag }}
+          BRANCH_TAG: ${{ steps.tags.outputs.branch_tag }}
+        run: |
+          set -euo pipefail
+          docker tag app:local "${ECR_REPOSITORY_URI}:${SHA_TAG}"
+          docker tag app:local "${ECR_REPOSITORY_URI}:${BRANCH_TAG}"
+          docker push "${ECR_REPOSITORY_URI}:${SHA_TAG}"
+          docker push "${ECR_REPOSITORY_URI}:${BRANCH_TAG}"
+          echo "Pushed ${ECR_REPOSITORY_URI}:${SHA_TAG}"
+          echo "Pushed ${ECR_REPOSITORY_URI}:${BRANCH_TAG}"

@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  IAM role assumable by a GitHub Actions workflow via OIDC (no long-lived
+  access keys), scoped to push images to a single ECR repository. Used by the
+  Heimdall dummy-app build-and-push workflow. The trust policy's OIDC subject
+  condition accepts both the classic (repo:OWNER/REPO:ref:...) and GitHub's
+  immutable-identifier (repo:OWNER@<ownerId>/REPO@<repoId>:ref:...) subject
+  claim formats, since real GitHub Actions runs may present either.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization or user that owns the dummy-app repository.
+
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name (without the org/ prefix) that runs the workflow.
+
+  GitHubOrgId:
+    Type: String
+    Description: >
+      Numeric GitHub account/owner ID used in the immutable OIDC subject
+      (repo:OWNER@<ownerId>/...). Find via: gh api users/OWNER --jq .id
+
+  GitHubRepoId:
+    Type: String
+    Description: >
+      Numeric GitHub repository ID used in the immutable OIDC subject
+      (.../REPO@<repoId>:...). Find via: gh api repos/OWNER/REPO --jq .id
+
+  EcrRepositoryArn:
+    Type: String
+    Description: ARN of the ECR repository the role is allowed to push to (e.g. deploy2dev/sample-service).
+
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >
+      Set to false if the AWS account already has a token.actions.githubusercontent.com
+      OIDC provider registered (an account can only have one).
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  GitHubActionsEcrPushRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'gha-ecr-push-${GitHubRepo}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+                  - !Sub 'repo:${GitHubOrg}@${GitHubOrgId}/${GitHubRepo}@${GitHubRepoId}:*'
+      Policies:
+        - PolicyName: EcrPush
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPushToSampleService
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource: !Ref EcrRepositoryArn
+
+Outputs:
+  RoleArn:
+    Description: Role ARN to set as the AWS_ROLE_ARN repo variable in the dummy-app GitHub repository.
+    Value: !GetAtt GitHubActionsEcrPushRole.Arn

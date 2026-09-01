@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const environments = ["dev", "stage", "prod"] as const;
+export const environments = ["dev", "stage", "preprod", "prod"] as const;
 export const roles = ["admin", "user"] as const;
 export const deploymentStatuses = [
   "pending",
@@ -30,11 +30,17 @@ export const UserSchema = z.object({
 
 export type User = z.infer<typeof UserSchema>;
 
+export const EnvironmentTagSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9._-]*$/);
+
 export const ServiceEnvironmentSchema = z.object({
   clusterName: z.string(),
   serviceName: z.string(),
   taskFamily: z.string(),
-  environmentTag: EnvironmentSchema
+  environmentTag: EnvironmentTagSchema
 });
 
 export const ServiceSchema = z.object({
@@ -54,7 +60,7 @@ export const ReleaseSchema = z.object({
   tag: z.string(),
   digest: z.string(),
   pushedAt: z.string().optional(),
-  source: z.enum(["manual", "dev", "stage", "prod", "hotfix", "unknown"]),
+  source: z.enum(["manual", "dev", "stage", "preprod", "prod", "hotfix", "unknown"]),
   isEnvironmentPointer: z.boolean()
 });
 
@@ -131,7 +137,7 @@ export interface CurrentServiceState {
 }
 
 export function canDeploy(role: Role, environment: Environment): boolean {
-  if (environment === "prod") {
+  if (environment === "prod" || environment === "preprod") {
     return role === "admin";
   }
 
@@ -142,14 +148,23 @@ export function classifyReleaseTag(tag: string): Release["source"] {
   if (tag === "dev" || tag === "stage" || tag === "prod") {
     return tag;
   }
+  if (tag === "stg" || tag === "staging") {
+    return "stage";
+  }
+  if (tag === "preprod" || tag === "pre-prod") {
+    return "preprod";
+  }
   if (tag.startsWith("hotfix-")) {
     return "hotfix";
   }
   if (tag.startsWith("dev-")) {
     return "dev";
   }
-  if (tag.startsWith("stage-")) {
+  if (tag.startsWith("stage-") || tag.startsWith("stg-") || tag.startsWith("staging-")) {
     return "stage";
+  }
+  if (tag.startsWith("preprod-") || tag.startsWith("pre-prod-")) {
+    return "preprod";
   }
   if (tag.startsWith("prod-")) {
     return "prod";
@@ -158,4 +173,15 @@ export function classifyReleaseTag(tag: string): Release["source"] {
     return "manual";
   }
   return "unknown";
+}
+
+export function environmentPointerTags(service: DeploymentService): Set<string> {
+  const tags = new Set<string>();
+  for (const environment of environments) {
+    const config = service.environments[environment];
+    if (config) {
+      tags.add(config.environmentTag);
+    }
+  }
+  return tags;
 }

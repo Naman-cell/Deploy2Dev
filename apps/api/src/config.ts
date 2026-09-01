@@ -1,4 +1,7 @@
-import type { DeploymentService } from "@heimdall/shared";
+import { ServiceSchema, type DeploymentService } from "@heimdall/shared";
+import { readFileSync } from "node:fs";
+import { z } from "zod";
+import bundledServiceCatalog from "./service-catalog.json" with { type: "json" };
 
 export interface AppConfig {
   port: number;
@@ -44,6 +47,17 @@ const sandboxService: DeploymentService = {
       taskFamily: process.env.ECS_STAGE_TASK_FAMILY ?? "deploy2dev-sample-service-stage",
       environmentTag: "stage"
     },
+    preprod: {
+      clusterName:
+        process.env.ECS_PREPROD_CLUSTER_NAME ?? process.env.ECS_STAGE_CLUSTER_NAME ?? "deploy2dev-dev",
+      serviceName:
+        process.env.ECS_PREPROD_SERVICE_NAME ?? process.env.ECS_STAGE_SERVICE_NAME ?? "sample-service-stage",
+      taskFamily:
+        process.env.ECS_PREPROD_TASK_FAMILY ??
+        process.env.ECS_STAGE_TASK_FAMILY ??
+        "deploy2dev-sample-service-stage",
+      environmentTag: "preprod"
+    },
     prod: {
       clusterName: process.env.ECS_PROD_CLUSTER_NAME ?? "deploy2dev-dev",
       serviceName: process.env.ECS_PROD_SERVICE_NAME ?? "sample-service-prod",
@@ -54,9 +68,72 @@ const sandboxService: DeploymentService = {
   allowedDeployRolesByEnvironment: {
     dev: ["admin", "user"],
     stage: ["admin", "user"],
+    preprod: ["admin"],
     prod: ["admin"]
   }
 };
+
+const ServiceCatalogSchema = z
+  .array(ServiceSchema)
+  .min(1, "Service catalog must contain at least one service")
+  .refine(
+    (services) => services.every((service) => Object.keys(service.environments).length > 0),
+    (services) => {
+      const unconfigured = services.find((service) => Object.keys(service.environments).length === 0);
+      return {
+        message: `Service "${unconfigured?.serviceId ?? "<unknown>"}" has no configured environments`
+      };
+    }
+  );
+
+function parseServiceCatalog(source: string, raw: unknown): DeploymentService[] {
+  const result = ServiceCatalogSchema.safeParse(raw);
+  if (!result.success) {
+    throw new Error(`Invalid service catalog from ${source}: ${result.error.message}`);
+  }
+  return result.data;
+}
+
+function loadServiceCatalog(): DeploymentService[] {
+  const inlineJson = process.env.SERVICE_CATALOG_JSON;
+  if (inlineJson) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(inlineJson);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid service catalog from SERVICE_CATALOG_JSON: not valid JSON (${message})`);
+    }
+    return parseServiceCatalog("SERVICE_CATALOG_JSON", parsed);
+  }
+
+  const catalogPath = process.env.SERVICE_CATALOG_PATH;
+  if (catalogPath) {
+    let contents: string;
+    try {
+      contents = readFileSync(catalogPath, "utf-8");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid service catalog from SERVICE_CATALOG_PATH=${catalogPath}: ${message}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Invalid service catalog from SERVICE_CATALOG_PATH=${catalogPath}: not valid JSON (${message})`
+      );
+    }
+    return parseServiceCatalog(`SERVICE_CATALOG_PATH=${catalogPath}`, parsed);
+  }
+
+  if (process.env.SERVICE_CATALOG === "sandbox") {
+    return parseServiceCatalog("SERVICE_CATALOG=sandbox", [sandboxService]);
+  }
+
+  return parseServiceCatalog("bundled service-catalog.json", bundledServiceCatalog);
+}
 
 export function loadConfig(): AppConfig {
   const dataStore = process.env.DATA_STORE === "dynamodb" ? "dynamodb" : "memory";
@@ -67,7 +144,7 @@ export function loadConfig(): AppConfig {
     tokenTtlSeconds: Number(process.env.TOKEN_TTL_SECONDS ?? "28800"),
     dataStore,
     awsIntegration: process.env.AWS_INTEGRATION === "aws" ? "aws" : "mock",
-    awsRegion: process.env.AWS_REGION ?? "us-east-1",
+    awsRegion: process.env.AWS_REGION ?? "ap-south-1",
     usersTableName: process.env.USERS_TABLE_NAME ?? "heimdall-users",
     deploymentsTableName: process.env.DEPLOYMENTS_TABLE_NAME ?? "heimdall-deployments",
     deploymentEventsTableName:
@@ -79,6 +156,6 @@ export function loadConfig(): AppConfig {
       (dataStore === "memory"
         ? "local-development-admin-password"
         : readRequired("SEED_ADMIN_PASSWORD")),
-    services: [sandboxService]
+    services: loadServiceCatalog()
   };
 }

@@ -1,5 +1,5 @@
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
-import { classifyReleaseTag } from "@heimdall/shared";
+import { classifyReleaseTag, environmentPointerTags, environments } from "@heimdall/shared";
 import type { EcsAdapter, RegistryAdapter } from "./types";
 
 function environmentConfig(service: DeploymentService, environment: Environment) {
@@ -12,7 +12,7 @@ function environmentConfig(service: DeploymentService, environment: Environment)
 
 const now = new Date().toISOString();
 
-const releases: Release[] = [
+const manualReleases: Release[] = [
   {
     tag: "branch-feature-login-a1b2c3d",
     digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -40,49 +40,116 @@ const releases: Release[] = [
     pushedAt: now,
     source: "hotfix",
     isEnvironmentPointer: false
-  },
-  {
-    tag: "dev",
-    digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    pushedAt: now,
-    source: "dev",
-    isEnvironmentPointer: true
-  },
-  {
-    tag: "stage",
-    digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-    pushedAt: now,
-    source: "stage",
-    isEnvironmentPointer: true
   }
 ];
 
-const envDigests = new Map<Environment, string>([
-  ["dev", releases[4]?.digest ?? ""],
-  ["stage", releases[5]?.digest ?? ""],
-  ["prod", releases[5]?.digest ?? ""]
-]);
+const devPointerDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+const stagePointerDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+const preprodPointerDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333335";
+const prodPointerDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+
+/**
+ * Seed digests for each *logical* environment. The mock stays usable with both the sandbox
+ * catalog (tags dev/stage/prod) and the SkillBrew catalog (tags dev/stg/staging/preprod/prod)
+ * because pointer tags are always resolved from the service passed in, not from a hardcoded tag
+ * set. preprod runs on the stage ECS cluster/service but is tracked by its own `preprod` pointer
+ * tag, so it gets its own seed digest here.
+ */
+const seedDigestByEnvironment: Record<Environment, string> = {
+  dev: devPointerDigest,
+  stage: stagePointerDigest,
+  preprod: preprodPointerDigest,
+  prod: prodPointerDigest
+};
+
+/** Per-service, per-tag current digest. Keyed by `${serviceId}#${environmentTag}`. */
+const envDigests = new Map<string, string>();
+
+/**
+ * Clears all mock promotion state. `envDigests` is module scope (shared across every
+ * `MockRegistryAdapter` instance in the process), so without an explicit reset a fresh adapter
+ * created later in the same test file still inherits digests written by earlier tests. Call this
+ * in a `beforeEach` wherever tests rely on `MockRegistryAdapter`/`MockEcsAdapter` starting from
+ * the seed digests.
+ */
+export function resetMockRegistry(): void {
+  envDigests.clear();
+}
+
+function digestKey(service: DeploymentService, environmentTag: string): string {
+  return `${service.serviceId}#${environmentTag}`;
+}
+
+function seedDigest(service: DeploymentService, environment: Environment): string | undefined {
+  const config = service.environments[environment];
+  if (!config) {
+    return undefined;
+  }
+  const key = digestKey(service, config.environmentTag);
+  if (!envDigests.has(key)) {
+    envDigests.set(key, seedDigestByEnvironment[environment]);
+  }
+  return envDigests.get(key);
+}
+
+function pointerReleases(service: DeploymentService): Release[] {
+  const releases: Release[] = [];
+  for (const environment of environments) {
+    const config = service.environments[environment];
+    if (!config) {
+      continue;
+    }
+    const digest = seedDigest(service, environment);
+    if (!digest) {
+      continue;
+    }
+    releases.push({
+      tag: config.environmentTag,
+      digest,
+      pushedAt: now,
+      source: classifyReleaseTag(config.environmentTag),
+      isEnvironmentPointer: true
+    });
+  }
+  return releases;
+}
 
 export class MockRegistryAdapter implements RegistryAdapter {
-  public async listReleases(_service: DeploymentService, _environment: Environment): Promise<Release[]> {
+  public async listReleases(service: DeploymentService): Promise<Release[]> {
+    const pointerTags = environmentPointerTags(service);
+    const releases = [...manualReleases, ...pointerReleases(service)];
     return releases
-      .map((release) => ({ ...release, source: classifyReleaseTag(release.tag) }))
+      .map((release) => ({
+        ...release,
+        source: classifyReleaseTag(release.tag),
+        isEnvironmentPointer: pointerTags.has(release.tag)
+      }))
       .sort((a, b) => (b.pushedAt ?? "").localeCompare(a.pushedAt ?? ""));
   }
 
+  public async findRelease(
+    service: DeploymentService,
+    tag: string,
+    digest: string
+  ): Promise<Release | undefined> {
+    const releases = await this.listReleases(service);
+    return releases.find((release) => release.tag === tag && release.digest === digest);
+  }
+
   public async getEnvironmentDigest(
-    _service: DeploymentService,
+    service: DeploymentService,
     environment: Environment
   ): Promise<string | undefined> {
-    return envDigests.get(environment);
+    return seedDigest(service, environment);
   }
 
   public async promoteEnvironmentTag(
-    _service: DeploymentService,
+    service: DeploymentService,
     environment: Environment,
     imageDigest: string
   ): Promise<void> {
-    envDigests.set(environment, imageDigest);
+    const config = environmentConfig(service, environment);
+    envDigests.set(digestKey(service, config.environmentTag), imageDigest);
   }
 }
 
@@ -98,7 +165,7 @@ export class MockEcsAdapter implements EcsAdapter {
       clusterName: config.clusterName,
       serviceName: config.serviceName,
       currentTaskDefinitionArn: `arn:aws:ecs:mock:task-definition/${config.taskFamily}:1`,
-      environmentImageDigest: envDigests.get(environment),
+      environmentImageDigest: seedDigest(service, environment),
       runningCount: 1,
       desiredCount: 1,
       status: "ACTIVE"
