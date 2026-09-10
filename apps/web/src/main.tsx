@@ -1,15 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, History, Rocket, Shield, Users } from "lucide-react";
+import {
+  Activity,
+  CheckCircle2,
+  History,
+  Loader2,
+  Rocket,
+  ScrollText,
+  Shield,
+  Users,
+  X,
+  XCircle
+} from "lucide-react";
 import type {
   CurrentServiceState,
   Deployment,
+  DeploymentEvent,
   DeploymentService,
   Environment,
   Release,
   User
 } from "@heimdall/shared";
-import { canDeploy, environments } from "@heimdall/shared";
+import { canDeploy, environments, isReleaseEligibleForEnvironment } from "@heimdall/shared";
 import { api, ApiError } from "./api";
 import "./styles.css";
 
@@ -27,7 +39,84 @@ function formatDigest(digest?: string): string {
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "rolled_back"]);
 const POLL_INTERVAL_MS = 2500;
-const MAX_POLL_ATTEMPTS = 150; // ~6 minutes, matching the ECS waitForStable budget
+const MAX_POLL_ATTEMPTS = 260; // ~10.8 minutes, matching the ECS waitForStable budget (~600s)
+
+// "ecs_wait_stable" -> "Ecs wait stable"
+function formatPhase(phase: string): string {
+  return phase
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function formatTime(iso: string): string {
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleTimeString();
+}
+
+type StepIconState = "spinner" | "success" | "failure";
+
+function stepState(
+  event: DeploymentEvent,
+  index: number,
+  events: DeploymentEvent[],
+  deploymentStatus: string
+): StepIconState {
+  const isLast = index === events.length - 1;
+  const terminal = TERMINAL_STATUSES.has(deploymentStatus);
+  if (event.status === "failed") return "failure";
+  if (event.status === "succeeded" || event.status === "rolled_back") return "success";
+  // event.status is "running" or "pending":
+  if (isLast && !terminal) return "spinner";
+  return "success";
+}
+
+function renderStepIcon(state: StepIconState) {
+  if (state === "spinner") return <Loader2 size={14} className="step-icon spinner" />;
+  if (state === "failure") return <XCircle size={14} className="step-icon failure" />;
+  return <CheckCircle2 size={14} className="step-icon success" />;
+}
+
+function readMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+interface EventMetadataSummary {
+  summary?: string;
+  lastServiceEvent?: string;
+}
+
+function summarizeEventMetadata(event: DeploymentEvent): EventMetadataSummary {
+  const metadata = event.metadata;
+  const running = readMetadataNumber(metadata, "runningCount");
+  const desired = readMetadataNumber(metadata, "desiredCount");
+  const pending = readMetadataNumber(metadata, "pendingCount");
+  const rolloutState = readMetadataString(metadata, "rolloutState");
+  const lastServiceEvent = readMetadataString(metadata, "lastServiceEvent");
+
+  const parts: string[] = [];
+  if (running !== undefined || desired !== undefined) {
+    parts.push(`running ${running ?? "?"}/${desired ?? "?"}`);
+  }
+  if (pending !== undefined) {
+    parts.push(`pending ${pending}`);
+  }
+  if (rolloutState) {
+    parts.push(rolloutState);
+  }
+
+  return {
+    summary: parts.length > 0 ? parts.join(" · ") : undefined,
+    lastServiceEvent
+  };
+}
 
 // Polls GET /deployments/:id until the deployment reaches a terminal status (or the attempt
 // budget is exhausted), calling `onChanged` after every poll so the dashboard's deployment list
@@ -195,6 +284,7 @@ function DeploymentHistory({
 }) {
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState("");
 
   async function rollback(deployment: Deployment) {
     if (!window.confirm(`Rollback ${deployment.serviceName} ${deployment.environment}?`)) {
@@ -265,7 +355,7 @@ function DeploymentHistory({
                   <td>
                     <span className={`status ${deployment.status}`}>{deployment.status}</span>
                   </td>
-                  <td>
+                  <td className="action-cell">
                     <button
                       className="secondary"
                       disabled={
@@ -277,6 +367,12 @@ function DeploymentHistory({
                     >
                       {busyId === deployment.deploymentId ? "Rolling back..." : "Rollback"}
                     </button>
+                    <button
+                      className="secondary"
+                      onClick={() => setSelectedDeploymentId(deployment.deploymentId)}
+                    >
+                      <ScrollText size={16} /> Logs
+                    </button>
                   </td>
                 </tr>
               ))
@@ -284,7 +380,136 @@ function DeploymentHistory({
           </tbody>
         </table>
       </div>
+      {selectedDeploymentId ? (
+        <DeploymentLogModal
+          token={token}
+          deploymentId={selectedDeploymentId}
+          onClose={() => setSelectedDeploymentId("")}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function DeploymentLogModal({
+  token,
+  deploymentId,
+  onClose
+}: {
+  token: string;
+  deploymentId: string;
+  onClose: () => void;
+}) {
+  const [deployment, setDeployment] = useState<Deployment | undefined>();
+  const [error, setError] = useState("");
+  const [polling, setPolling] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+
+    async function poll() {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const next = await api.deployment(token, deploymentId);
+        if (cancelled) return;
+        setDeployment(next);
+        setError("");
+        if (TERMINAL_STATUSES.has(next.status) || attempts >= MAX_POLL_ATTEMPTS) {
+          setPolling(false);
+          clearInterval(intervalId);
+        }
+      } catch (caught) {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Failed to load deployment log");
+        if (attempts >= MAX_POLL_ATTEMPTS) {
+          setPolling(false);
+          clearInterval(intervalId);
+        }
+      }
+    }
+
+    void poll();
+    const intervalId = setInterval(() => void poll(), POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [token, deploymentId]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <button className="modal-close" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        {!deployment ? (
+          <p className="muted">Loading deployment...</p>
+        ) : (
+          <>
+            <header className="modal-header">
+              <div>
+                <h2>{deployment.serviceName}</h2>
+                <div className="modal-meta">
+                  <span className={`env ${deployment.environment}`}>{deployment.environment}</span>
+                  <span className={`status ${deployment.status}`}>{deployment.status}</span>
+                  {polling && !TERMINAL_STATUSES.has(deployment.status) ? (
+                    <span className="live-indicator">
+                      <span className="live-dot" /> live
+                    </span>
+                  ) : null}
+                </div>
+                <p className="modal-submeta">
+                  <strong>{deployment.selectedImageTag}</strong>{" "}
+                  <small>{formatDigest(deployment.selectedImageDigest)}</small>
+                </p>
+                <p className="modal-submeta muted">
+                  Requested by {deployment.requestedByEmail} · started{" "}
+                  {new Date(deployment.startedAt).toLocaleString()}
+                </p>
+              </div>
+            </header>
+            {error ? <p className="error">{error}</p> : null}
+            <div className="timeline-wrap">
+              {deployment.events.length === 0 ? (
+                <p className="muted">Waiting for the first event...</p>
+              ) : (
+                <ul className="timeline">
+                  {deployment.events.map((event, index) => {
+                    const { summary, lastServiceEvent } = summarizeEventMetadata(event);
+                    return (
+                      <li key={`${event.timestamp}-${index}`} className="timeline-item">
+                        <span className="timeline-indicator">
+                          {renderStepIcon(
+                            stepState(event, index, deployment.events, deployment.status)
+                          )}
+                        </span>
+                        <div className="timeline-body">
+                          <div className="timeline-row">
+                            <span className="timeline-phase">{formatPhase(event.phase)}</span>
+                            <span className="timeline-time">{formatTime(event.timestamp)}</span>
+                          </div>
+                          <p className="timeline-message">{event.message}</p>
+                          {summary ? <p className="timeline-sub muted">{summary}</p> : null}
+                          {lastServiceEvent ? (
+                            <p className="timeline-sub muted">{lastServiceEvent}</p>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            {deployment.status === "failed" && deployment.errorMessage ? (
+              <p className="error modal-error">{deployment.errorMessage}</p>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -332,9 +557,12 @@ function DeploymentCenter({
       .then(([nextReleases, nextCurrent]) => {
         setReleases(nextReleases);
         setCurrent(nextCurrent);
-        setReleaseDigest(
-          nextReleases.find((release) => !release.isEnvironmentPointer)?.digest ?? ""
+        const eligibleDefault = nextReleases.find(
+          (release) =>
+            !release.isEnvironmentPointer && isReleaseEligibleForEnvironment(environment, release)
         );
+        const fallbackDefault = nextReleases.find((release) => !release.isEnvironmentPointer);
+        setReleaseDigest((eligibleDefault ?? fallbackDefault)?.digest ?? "");
       })
       .catch((caught: unknown) =>
         setError(caught instanceof Error ? caught.message : "Load failed")
@@ -342,6 +570,8 @@ function DeploymentCenter({
   }, [environment, serviceId, token]);
 
   const deployBlocked = !canDeploy(user.role, environment);
+  const releaseIneligible =
+    !!selectedRelease && !isReleaseEligibleForEnvironment(environment, selectedRelease);
 
   async function deploy() {
     if (!selectedRelease) return;
@@ -411,11 +641,20 @@ function DeploymentCenter({
         <label>
           Release
           <select value={releaseDigest} onChange={(event) => setReleaseDigest(event.target.value)}>
-            {releases.map((release) => (
-              <option key={`${release.tag}-${release.digest}`} value={release.digest}>
-                {release.tag} {release.isEnvironmentPointer ? "(env pointer)" : ""}
-              </option>
-            ))}
+            {releases.map((release) => {
+              const eligible = isReleaseEligibleForEnvironment(environment, release);
+              return (
+                <option
+                  key={`${release.tag}-${release.digest}`}
+                  value={release.digest}
+                  disabled={!eligible}
+                >
+                  {release.tag} · {release.sourceBranch ?? "no branch"}
+                  {release.isEnvironmentPointer ? " (env pointer)" : ""}
+                  {eligible ? "" : " — release branch only"}
+                </option>
+              );
+            })}
           </select>
         </label>
       </div>
@@ -441,8 +680,17 @@ function DeploymentCenter({
           releases but cannot deploy them.
         </p>
       ) : null}
+      {releaseIneligible ? (
+        <p className="warning">
+          <Shield size={16} /> {environment} only accepts images built from a release branch (main
+          or release/*). Selected image branch: {selectedRelease?.sourceBranch ?? "unknown"}.
+        </p>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
-      <button disabled={!selectedRelease || loading || deployBlocked} onClick={() => void deploy()}>
+      <button
+        disabled={!selectedRelease || loading || deployBlocked || releaseIneligible}
+        onClick={() => void deploy()}
+      >
         {loading ? "Deploying..." : `Deploy to ${environment}`}
       </button>
     </section>

@@ -73,7 +73,9 @@ export class MemoryStore implements DataStore {
     if (!deployment) {
       return;
     }
-    deployment.events.push(event);
+    // Don't push `event` here: `DeploymentCenterService.event()` (the only caller) already pushed
+    // it onto this same aliased `deployment.events` array before calling us, since `saveDeployment`
+    // stored the identical object reference. Pushing again would double every event.
     this.deployments.set(event.deploymentId, deployment);
   }
 

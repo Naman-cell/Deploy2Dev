@@ -11,14 +11,15 @@ import {
   ECSClient,
   RegisterTaskDefinitionCommand,
   UpdateServiceCommand,
-  waitUntilServicesStable
+  type Service as EcsService
+
 } from "@aws-sdk/client-ecs";
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
-import { classifyReleaseTag, environmentPointerTags } from "@heimdall/shared";
+import { branchFromImageTags, classifyReleaseTag, environmentPointerTags } from "@heimdall/shared";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
 import type { Logger } from "../logger";
-import type { EcsAdapter, RegistryAdapter } from "./types";
+import type { EcsAdapter, RegistryAdapter, StabilityProgress } from "./types";
 
 /** Page size requested per DescribeImages call. */
 const RELEASES_PAGE_SIZE = 100;
@@ -75,13 +76,15 @@ export class AwsRegistryAdapter implements RegistryAdapter {
         if (!digest) {
           continue;
         }
+        const sourceBranch = branchFromImageTags(detail.imageTags ?? []);
         for (const tag of detail.imageTags ?? []) {
           releases.push({
             tag,
             digest,
             pushedAt: detail.imagePushedAt?.toISOString(),
             source: classifyReleaseTag(tag),
-            isEnvironmentPointer: pointerTags.has(tag)
+            isEnvironmentPointer: pointerTags.has(tag),
+            sourceBranch
           });
         }
       }
@@ -122,7 +125,8 @@ export class AwsRegistryAdapter implements RegistryAdapter {
         digest: detail.imageDigest,
         pushedAt: detail.imagePushedAt?.toISOString(),
         source: classifyReleaseTag(tag),
-        isEnvironmentPointer: pointerTags.has(tag)
+        isEnvironmentPointer: pointerTags.has(tag),
+        sourceBranch: branchFromImageTags(detail.imageTags ?? [])
       };
     } catch (error) {
       if (isEcrImageNotFound(error)) {
@@ -186,9 +190,13 @@ export class AwsRegistryAdapter implements RegistryAdapter {
 
 export class AwsEcsAdapter implements EcsAdapter {
   private readonly client: ECSClient;
+  private readonly maxWaitMs: number;
+  private readonly pollDelayMs: number;
 
   public constructor(config: AppConfig) {
     this.client = new ECSClient({ region: config.awsRegion });
+    this.maxWaitMs = config.stabilityTimeoutMs;
+    this.pollDelayMs = config.stabilityPollDelayMs;
   }
 
   public async getCurrentState(
@@ -297,15 +305,106 @@ export class AwsEcsAdapter implements EcsAdapter {
     return result.service?.taskDefinition;
   }
 
-  public async waitForStable(service: DeploymentService, environment: Environment): Promise<void> {
+  // Manual poll loop over DescribeServices, replacing the SDK's `waitUntilServicesStable` waiter.
+  // The waiter's own timeout (previously a fixed 300s) was too short for a cold ECR image pull on
+  // a fresh instance (observed ~6 minutes), which made Heimdall report `ecs_not_stable` for
+  // rollouts that ECS itself eventually completed successfully. Polling ourselves also lets us
+  // surface live per-poll progress via `onProgress`, and keeps the only AWS call in this path to
+  // DescribeServices (no ListTasks/DescribeTasks), matching the Lambda's existing IAM grants.
+  public async waitForStable(
+    service: DeploymentService,
+    environment: Environment,
+    onProgress?: (progress: StabilityProgress) => void | Promise<void>
+  ): Promise<void> {
     const env = environmentConfig(service, environment);
-    const result = await waitUntilServicesStable(
-      { client: this.client, maxWaitTime: 300, minDelay: 5, maxDelay: 15 },
-      { cluster: env.clusterName, services: [env.serviceName] }
-    );
+    const deadline = Date.now() + this.maxWaitMs;
+    let lastSnapshot: StabilityProgress = {
+      runningCount: 0,
+      desiredCount: 0,
+      pendingCount: 0,
+      message: "Waiting for ECS service status"
+    };
 
-    if (result.state !== "SUCCESS") {
-      throw new AppError(504, "ecs_not_stable", "ECS service did not stabilize before timeout");
+    for (;;) {
+      let describedService: EcsService | undefined;
+
+      try {
+        const result = await this.client.send(
+          new DescribeServicesCommand({ cluster: env.clusterName, services: [env.serviceName] })
+        );
+        describedService = result.services?.[0];
+        if (!describedService) {
+          throw new AppError(404, "ecs_service_not_found", "ECS service was not found");
+        }
+      } catch (error) {
+        if (error instanceof AppError) {
+          throw error;
+        }
+        // Transient DescribeServices error (throttling, brief network blip, etc): don't kill the
+        // loop, note it in the progress stream, and keep polling until the deadline.
+        const reason = error instanceof Error ? error.message : String(error);
+        lastSnapshot = { ...lastSnapshot, message: `DescribeServices error (will retry): ${reason}` };
+        await onProgress?.(lastSnapshot);
+
+        if (Date.now() >= deadline) {
+          throw new AppError(
+            504,
+            "ecs_not_stable",
+            `ECS service did not stabilize within ${Math.round(this.maxWaitMs / 1000)}s (last: ${lastSnapshot.message})`
+          );
+        }
+        await sleep(this.pollDelayMs);
+        continue;
+      }
+
+      const deployments = describedService.deployments ?? [];
+      const primary = deployments.find((deployment) => deployment.status === "PRIMARY");
+      const runningCount = primary?.runningCount ?? describedService.runningCount ?? 0;
+      const desiredCount = primary?.desiredCount ?? describedService.desiredCount ?? 0;
+      const pendingCount = primary?.pendingCount ?? describedService.pendingCount ?? 0;
+      const rolloutState = primary?.rolloutState;
+      const lastServiceEvent = describedService.events?.[0]?.message;
+
+      if (rolloutState === "FAILED") {
+        throw new AppError(
+          504,
+          "ecs_not_stable",
+          `ECS reported a failed rollout: ${lastServiceEvent ?? "no service event available"}`
+        );
+      }
+
+      const isStable =
+        rolloutState === "COMPLETED" && runningCount >= desiredCount && deployments.length === 1;
+
+      lastSnapshot = {
+        rolloutState,
+        runningCount,
+        desiredCount,
+        pendingCount,
+        lastServiceEvent,
+        message: isStable
+          ? `${runningCount}/${desiredCount} running — reached steady state`
+          : `${runningCount}/${desiredCount} running, ${pendingCount} pending — ${rolloutState ?? "UNKNOWN"}`
+      };
+      await onProgress?.(lastSnapshot);
+
+      if (isStable) {
+        return;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new AppError(
+          504,
+          "ecs_not_stable",
+          `ECS service did not stabilize within ${Math.round(this.maxWaitMs / 1000)}s (last: ${lastSnapshot.message})`
+        );
+      }
+
+      await sleep(this.pollDelayMs);
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

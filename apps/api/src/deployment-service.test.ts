@@ -171,6 +171,75 @@ describe("DeploymentCenterService", () => {
       expect(promoteSpy).not.toHaveBeenCalled();
     });
 
+    it("executeDeployment appends deduped ecs_wait_stable progress events sourced from the adapter's onProgress callback", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      const progressSnapshots = [
+        {
+          rolloutState: "IN_PROGRESS",
+          runningCount: 0,
+          desiredCount: 1,
+          pendingCount: 1,
+          lastServiceEvent: "registering targets",
+          message: "0/1 running, 1 pending — IN_PROGRESS"
+        },
+        // Identical to the previous snapshot: executeDeployment's dedupe must drop this one.
+        {
+          rolloutState: "IN_PROGRESS",
+          runningCount: 0,
+          desiredCount: 1,
+          pendingCount: 1,
+          lastServiceEvent: "registering targets",
+          message: "0/1 running, 1 pending — IN_PROGRESS"
+        },
+        {
+          rolloutState: "COMPLETED",
+          runningCount: 1,
+          desiredCount: 1,
+          pendingCount: 0,
+          lastServiceEvent: "steady state",
+          message: "1/1 running — reached steady state"
+        }
+      ];
+      vi.spyOn(cloud.ecs, "waitForStable").mockImplementation(async (_svc, _env, onProgress) => {
+        for (const snapshot of progressSnapshots) {
+          await onProgress?.(snapshot);
+        }
+      });
+
+      const deployment = await service.createDeployment(devRequest, adminActor);
+
+      expect(deployment.status).toBe("succeeded");
+
+      // Each phase should appear in `deployment.events` exactly once: `DeploymentCenterService.event()`
+      // pushes onto the live `deployment.events` array itself, and MemoryStore.appendDeploymentEvent
+      // must not push a second time on top of that (DynamoDbStore's version mutates a freshly
+      // fetched copy instead, so it was never affected by this).
+      const phaseCounts = new Map<string, number>();
+      for (const event of deployment.events) {
+        phaseCounts.set(event.phase, (phaseCounts.get(event.phase) ?? 0) + 1);
+      }
+      expect(phaseCounts.get("validated")).toBe(1);
+      expect(phaseCounts.get("promote_environment_tag")).toBe(1);
+      expect(phaseCounts.get("ecs_force_deploy")).toBe(1);
+      expect(phaseCounts.get("completed")).toBe(1);
+      // One "ecs_wait_stable" event per *distinct* progress snapshot: the initial "Waiting for ECS
+      // service stability" event, plus one per non-duplicate entry in `progressSnapshots` (the
+      // repeated IN_PROGRESS snapshot must be dropped by executeDeployment's dedupe).
+      expect(phaseCounts.get("ecs_wait_stable")).toBe(3);
+
+      const waitEvents = deployment.events.filter((event) => event.phase === "ecs_wait_stable");
+      expect(waitEvents.map((event) => event.message)).toEqual([
+        "Waiting for ECS service stability",
+        "0/1 running, 1 pending — IN_PROGRESS",
+        "1/1 running — reached steady state"
+      ]);
+
+      const inProgressEvent = waitEvents.find((event) => event.message === "0/1 running, 1 pending — IN_PROGRESS");
+      expect(inProgressEvent?.metadata).toMatchObject({ rolloutState: "IN_PROGRESS", runningCount: 0 });
+      const steadyStateEvent = waitEvents.find((event) => event.message === "1/1 running — reached steady state");
+      expect(steadyStateEvent?.metadata).toMatchObject({ rolloutState: "COMPLETED", runningCount: 1 });
+    });
+
     it("executeDeployment on an unknown deployment id logs a warning and returns without throwing", async () => {
       const { service } = await createHarness("sandbox");
 
@@ -238,21 +307,21 @@ describe("DeploymentCenterService", () => {
       imageDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     };
 
-    async function probeLockFree(store: DataStore): Promise<boolean> {
+    const probeLockFree = async (store: DataStore): Promise<boolean> => {
       return store.acquireLock({
         lockKey,
         deploymentId: "lock-probe",
         createdAt: new Date().toISOString(),
         expiresAt: Math.floor(Date.now() / 1000) + 900
       });
-    }
+    };
 
-    async function createRollbackCandidate(service: DeploymentCenterService) {
+    const createRollbackCandidate = async (service: DeploymentCenterService) => {
       const completed = await service.createDeployment(devRequest, adminActor);
       expect(completed.status).toBe("succeeded");
       expect(completed.previousTaskDefinitionArn).toBeDefined();
       return completed;
-    }
+    };
 
     it("beginRollback persists a running record without invoking ECS, and holds the lock", async () => {
       const { service, cloud, store } = await createHarness("sandbox");
@@ -361,6 +430,72 @@ describe("DeploymentCenterService", () => {
     });
   });
 
+  describe("release-branch provenance gate", () => {
+    const adminActor = { userId: "admin", email: "admin@example.com", role: "admin" as const };
+    const featureBranchRequest = (environment: "dev" | "stage" | "preprod" | "prod") => ({
+      serviceId: "sample-service",
+      environment,
+      imageTag: "branch-feature-login-a1b2c3d",
+      imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    });
+    const mainBranchRequest = (environment: "dev" | "stage" | "preprod" | "prod") => ({
+      serviceId: "sample-service",
+      environment,
+      imageTag: "branch-main--fa867dc",
+      imageDigest: "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    });
+
+    it("rejects a feature-branch image deployed to prod with 422 release_branch_required", async () => {
+      const { service } = await createHarness("sandbox");
+
+      await expect(service.beginDeployment(featureBranchRequest("prod"), adminActor)).rejects.toMatchObject({
+        statusCode: 422,
+        code: "release_branch_required"
+      });
+    });
+
+    it("rejects a feature-branch image deployed to preprod with 422 release_branch_required", async () => {
+      const { service } = await createHarness("sandbox");
+
+      await expect(service.beginDeployment(featureBranchRequest("preprod"), adminActor)).rejects.toMatchObject({
+        statusCode: 422,
+        code: "release_branch_required"
+      });
+    });
+
+    it("allows a main-branch image deployed to prod", async () => {
+      const { service } = await createHarness("sandbox");
+
+      const deployment = await service.createDeployment(mainBranchRequest("prod"), adminActor);
+
+      expect(deployment.status).toBe("succeeded");
+    });
+
+    it("allows a main-branch image deployed to preprod", async () => {
+      const { service } = await createHarness("sandbox");
+
+      const deployment = await service.createDeployment(mainBranchRequest("preprod"), adminActor);
+
+      expect(deployment.status).toBe("succeeded");
+    });
+
+    it("allows a feature-branch image deployed to dev", async () => {
+      const { service } = await createHarness("sandbox");
+
+      const deployment = await service.createDeployment(featureBranchRequest("dev"), adminActor);
+
+      expect(deployment.status).toBe("succeeded");
+    });
+
+    it("allows a feature-branch image deployed to stage", async () => {
+      const { service } = await createHarness("sandbox");
+
+      const deployment = await service.createDeployment(featureBranchRequest("stage"), adminActor);
+
+      expect(deployment.status).toBe("succeeded");
+    });
+  });
+
   describe("SkillBrew catalog environment tag wiring", () => {
     const adminActor = { userId: "admin", email: "admin@example.com", role: "admin" as const };
     const userActor = { userId: "user", email: "user@example.com", role: "user" as const };
@@ -434,13 +569,15 @@ describe("DeploymentCenterService", () => {
     it("deploying to prod promotes the wire tag prod", async () => {
       const { service, cloud } = await createHarness("skillbrew");
       const djangoApp = service.getService("django_app");
-      const digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+      // prod requires a release-branch image (main or release/*); the mock fixture tagged
+      // `branch-main--fa867dc` derives `sourceBranch: "main"` and is release-eligible.
+      const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
 
       const deployment = await service.createDeployment(
         {
           serviceId: "django_app",
           environment: "prod",
-          imageTag: "branch-feature-login-a1b2c3d",
+          imageTag: "branch-main--fa867dc",
           imageDigest: digest
         },
         adminActor

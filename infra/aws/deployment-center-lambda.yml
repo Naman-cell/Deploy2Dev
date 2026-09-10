@@ -158,11 +158,13 @@ Resources:
       Handler: lambda.handler
       Runtime: nodejs20.x
       Role: !GetAtt ApiRole.Arn
-      # ECS waitForStable can take up to ~300s; the async deployment worker (self-invoked via
-      # LambdaDeploymentTrigger) needs headroom beyond that. The API-Gateway-facing request path
-      # itself now returns in well under API Gateway's 30s hard timeout since POST /deployments
+      # ECS waitForStable now polls for up to STABILITY_TIMEOUT_MS (default 600s) to tolerate a
+      # cold ECR image pull on a fresh instance; the async deployment worker (self-invoked via
+      # LambdaDeploymentTrigger, fire-and-forget with MaximumRetryAttempts 0) needs headroom beyond
+      # that, so the ceiling is set to the Lambda maximum. The API-Gateway-facing request path
+      # itself still returns in well under API Gateway's 30s hard timeout since POST /deployments
       # only does beginDeployment synchronously.
-      Timeout: 360
+      Timeout: 900
       MemorySize: 512
       Code:
         S3Bucket: !Ref LambdaCodeBucket

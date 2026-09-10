@@ -10,6 +10,12 @@ export interface AppConfig {
   dataStore: "memory" | "dynamodb";
   awsIntegration: "mock" | "aws";
   awsRegion: string;
+  /** Total budget (ms) for `EcsAdapter.waitForStable` to poll before throwing `ecs_not_stable`.
+   * Default 10 minutes — long enough to tolerate a cold ECR image pull on a fresh instance, which
+   * can take several minutes and previously false-failed against the SDK waiter's 300s ceiling. */
+  stabilityTimeoutMs: number;
+  /** Delay (ms) between `DescribeServices` polls in `EcsAdapter.waitForStable`. */
+  stabilityPollDelayMs: number;
   usersTableName: string;
   deploymentsTableName: string;
   deploymentEventsTableName: string;
@@ -145,6 +151,8 @@ export function loadConfig(): AppConfig {
     dataStore,
     awsIntegration: process.env.AWS_INTEGRATION === "aws" ? "aws" : "mock",
     awsRegion: process.env.AWS_REGION ?? "ap-south-1",
+    stabilityTimeoutMs: Number(process.env.STABILITY_TIMEOUT_MS ?? "600000"),
+    stabilityPollDelayMs: Number(process.env.STABILITY_POLL_DELAY_MS ?? "10000"),
     usersTableName: process.env.USERS_TABLE_NAME ?? "heimdall-users",
     deploymentsTableName: process.env.DEPLOYMENTS_TABLE_NAME ?? "heimdall-deployments",
     deploymentEventsTableName:

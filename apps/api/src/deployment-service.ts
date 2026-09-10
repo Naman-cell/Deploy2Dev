@@ -5,6 +5,7 @@ import {
   type DeploymentEvent,
   type DeploymentService,
   type Environment,
+  isReleaseEligibleForEnvironment,
   type Release,
   type Role
 } from "@heimdall/shared";
@@ -76,6 +77,14 @@ export class DeploymentCenterService {
     );
     if (!selected) {
       throw new AppError(404, "release_not_found", "Selected release was not found in ECR");
+    }
+
+    if (!isReleaseEligibleForEnvironment(request.environment, selected)) {
+      throw new AppError(
+        422,
+        "release_branch_required",
+        `The ${request.environment} environment only accepts images built from a release branch (main or release/*). Selected image branch: ${selected.sourceBranch ?? "unknown"}.`
+      );
     }
 
     const deploymentId = randomUUID();
@@ -184,7 +193,7 @@ export class DeploymentCenterService {
       await this.store.updateDeployment(deployment);
 
       await this.event(deployment, "ecs_wait_stable", "running", "Waiting for ECS service stability");
-      await this.cloud.ecs.waitForStable(service, deployment.environment);
+      await this.waitForEcsStable(service, deployment);
 
       deployment.status = "succeeded";
       deployment.completedAt = new Date().toISOString();
@@ -326,7 +335,7 @@ export class DeploymentCenterService {
         deployment.environment,
         deployment.previousTaskDefinitionArn
       );
-      await this.cloud.ecs.waitForStable(service, deployment.environment);
+      await this.waitForEcsStable(service, deployment);
 
       deployment.status = "rolled_back";
       deployment.completedAt = new Date().toISOString();
@@ -363,6 +372,27 @@ export class DeploymentCenterService {
     if (!canDeploy(role, environment)) {
       throw new AppError(403, "deployment_not_allowed", "You are not allowed to deploy this environment");
     }
+  }
+
+  // Waits for the ECS service to stabilize, streaming deduped `ecs_wait_stable` progress events as
+  // the rollout advances (poll snapshots that are identical to the previous one are dropped so
+  // callers see distinct log lines, not a flood of repeats every poll interval).
+  private async waitForEcsStable(service: DeploymentService, deployment: Deployment): Promise<void> {
+    let lastKey: string | undefined;
+    await this.cloud.ecs.waitForStable(service, deployment.environment, async (progress) => {
+      const key = `${progress.rolloutState}|${progress.runningCount}|${progress.desiredCount}|${progress.pendingCount}|${progress.lastServiceEvent}`;
+      if (key === lastKey) {
+        return;
+      }
+      lastKey = key;
+      await this.event(deployment, "ecs_wait_stable", "running", progress.message, {
+        rolloutState: progress.rolloutState,
+        runningCount: progress.runningCount,
+        desiredCount: progress.desiredCount,
+        pendingCount: progress.pendingCount,
+        lastServiceEvent: progress.lastServiceEvent
+      });
+    });
   }
 
   private async event(

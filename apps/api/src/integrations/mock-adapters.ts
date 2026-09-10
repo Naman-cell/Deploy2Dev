@@ -1,6 +1,11 @@
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
-import { classifyReleaseTag, environmentPointerTags, environments } from "@heimdall/shared";
-import type { EcsAdapter, RegistryAdapter } from "./types";
+import {
+  branchFromImageTags,
+  classifyReleaseTag,
+  environmentPointerTags,
+  environments
+} from "@heimdall/shared";
+import type { EcsAdapter, RegistryAdapter, StabilityProgress } from "./types";
 
 function environmentConfig(service: DeploymentService, environment: Environment) {
   const config = service.environments[environment];
@@ -12,35 +17,53 @@ function environmentConfig(service: DeploymentService, environment: Environment)
 
 const now = new Date().toISOString();
 
+/** Derives `sourceBranch` from the release's own tag (mirroring how the real AWS adapter derives
+ * it from all of a digest's ECR tags), so mock fixtures don't have to hand-maintain a value that
+ * duplicates what's already encoded in `tag`. */
+function withSourceBranch(release: Omit<Release, "sourceBranch">): Release {
+  return { ...release, sourceBranch: branchFromImageTags([release.tag]) };
+}
+
 const manualReleases: Release[] = [
-  {
+  // Non-release-eligible: a feature branch build. Exercises the gate's rejection path for
+  // preprod/prod while remaining deployable to dev/stage.
+  withSourceBranch({
     tag: "branch-feature-login-a1b2c3d",
     digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     pushedAt: now,
     source: "manual",
     isEnvironmentPointer: false
-  },
-  {
+  }),
+  // Release-eligible: a `main` branch build, tagged with the double-dash form CI actually
+  // produces (`branch-<branch>--<shortsha>`). Exercises the gate's success path for preprod/prod.
+  withSourceBranch({
+    tag: "branch-main--fa867dc",
+    digest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    pushedAt: now,
+    source: "manual",
+    isEnvironmentPointer: false
+  }),
+  withSourceBranch({
     tag: "dev-20260603-42-a1b2c3d",
     digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
     pushedAt: now,
     source: "dev",
     isEnvironmentPointer: false
-  },
-  {
+  }),
+  withSourceBranch({
     tag: "stage-20260603-18-d4e5f6a",
     digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
     pushedAt: now,
     source: "stage",
     isEnvironmentPointer: false
-  },
-  {
+  }),
+  withSourceBranch({
     tag: "hotfix-20260603-7-ab12cd3",
     digest: "sha256:4444444444444444444444444444444444444444444444444444444444444444",
     pushedAt: now,
     source: "hotfix",
     isEnvironmentPointer: false
-  }
+  })
 ];
 
 const devPointerDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
@@ -187,7 +210,18 @@ export class MockEcsAdapter implements EcsAdapter {
     return taskDefinitionArn;
   }
 
-  public async waitForStable(_service: DeploymentService, _environment: Environment): Promise<void> {
+  public async waitForStable(
+    _service: DeploymentService,
+    _environment: Environment,
+    onProgress?: (progress: StabilityProgress) => void | Promise<void>
+  ): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
+    await onProgress?.({
+      rolloutState: "COMPLETED",
+      runningCount: 1,
+      desiredCount: 1,
+      pendingCount: 0,
+      message: "stable (mock)"
+    });
   }
 }

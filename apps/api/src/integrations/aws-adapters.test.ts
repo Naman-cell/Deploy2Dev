@@ -12,6 +12,7 @@ import { loadConfig } from "../config";
 import type { Logger } from "../logger";
 import { logger } from "../logger";
 import { AwsEcsAdapter, AwsRegistryAdapter } from "./aws-adapters";
+import type { StabilityProgress } from "./types";
 
 // loadServiceCatalog (config.ts) checks SERVICE_CATALOG_JSON and SERVICE_CATALOG_PATH before
 // SERVICE_CATALOG, so all three must be controlled here or a value left over from the host
@@ -304,6 +305,49 @@ describe("AwsRegistryAdapter", () => {
         adapter.findRelease(service, "dev-20260603-1-abc1234", "sha256:current")
       ).rejects.toThrow("not authorized");
     });
+
+    it("derives sourceBranch from a sibling branch-<branch>--<sha> tag on the same digest", async () => {
+      const { config, service } = getSkillBrewService("django_app");
+      const adapter = new AwsRegistryAdapter(config, logger);
+
+      stubSend(adapter, async (command) => {
+        if (command instanceof DescribeImagesCommand) {
+          return {
+            imageDetails: [
+              {
+                imageDigest: "sha256:current",
+                imageTags: ["dev-20260603-1-abc1234", "branch-main--abc1234"]
+              }
+            ]
+          };
+        }
+        throw new Error("unexpected command sent to stub");
+      });
+
+      await expect(
+        adapter.findRelease(service, "dev-20260603-1-abc1234", "sha256:current")
+      ).resolves.toMatchObject({ sourceBranch: "main" });
+    });
+
+    it("leaves sourceBranch undefined when no sibling tag matches the branch convention", async () => {
+      const { config, service } = getSkillBrewService("django_app");
+      const adapter = new AwsRegistryAdapter(config, logger);
+
+      stubSend(adapter, async (command) => {
+        if (command instanceof DescribeImagesCommand) {
+          return {
+            imageDetails: [
+              { imageDigest: "sha256:current", imageTags: ["dev-20260603-1-abc1234"] }
+            ]
+          };
+        }
+        throw new Error("unexpected command sent to stub");
+      });
+
+      await expect(
+        adapter.findRelease(service, "dev-20260603-1-abc1234", "sha256:current")
+      ).resolves.toMatchObject({ sourceBranch: undefined });
+    });
   });
 
   describe("listReleases", () => {
@@ -358,6 +402,41 @@ describe("AwsRegistryAdapter", () => {
       ]);
       expect(capturedFilters).toEqual([{ tagStatus: "TAGGED" }, { tagStatus: "TAGGED" }]);
       expect(capturedTokens).toEqual([undefined, "page-2"]);
+    });
+
+    it("populates sourceBranch on every per-tag Release pushed for a digest, derived from that digest's full tag set", async () => {
+      const { config, service } = getSkillBrewService("django_app");
+      const adapter = new AwsRegistryAdapter(config, logger);
+
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeImagesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        return {
+          imageDetails: [
+            {
+              imageDigest: "sha256:release-branch",
+              // Double-dash form CI actually produces, alongside a plain sha- tag on the same digest.
+              imageTags: ["sha-fa867dc", "branch-main--fa867dc"],
+              imagePushedAt: new Date("2026-03-01T00:00:00.000Z")
+            },
+            {
+              imageDigest: "sha256:no-branch",
+              imageTags: ["dev-20260301-1-fa867de"],
+              imagePushedAt: new Date("2026-02-01T00:00:00.000Z")
+            }
+          ]
+        };
+      });
+
+      const releases = await adapter.listReleases(service);
+
+      const releaseBranchTags = releases.filter((release) => release.digest === "sha256:release-branch");
+      expect(releaseBranchTags).toHaveLength(2);
+      expect(releaseBranchTags.every((release) => release.sourceBranch === "main")).toBe(true);
+
+      const noBranchRelease = releases.find((release) => release.digest === "sha256:no-branch");
+      expect(noBranchRelease?.sourceBranch).toBeUndefined();
     });
 
     it("terminates when ECR returns the same nextToken repeatedly", async () => {
@@ -571,5 +650,198 @@ describe("AwsEcsAdapter", () => {
       (call): call is UpdateServiceCommand => call instanceof UpdateServiceCommand
     );
     expect(updateCall?.input.cluster).toBe("skillbrew-staging-cluster");
+  });
+
+  describe("waitForStable", () => {
+    afterEach(() => {
+      delete process.env.STABILITY_TIMEOUT_MS;
+      delete process.env.STABILITY_POLL_DELAY_MS;
+    });
+
+    /** Loads a config with a tiny timeout/poll delay so these tests exercise the real poll loop
+     * (including the timeout path) without introducing real multi-second sleeps into the suite. */
+    function loadFastStabilityConfig(timeoutMs: number, pollDelayMs: number): AppConfig {
+      process.env.STABILITY_TIMEOUT_MS = String(timeoutMs);
+      process.env.STABILITY_POLL_DELAY_MS = String(pollDelayMs);
+      return loadSkillBrewConfig();
+    }
+
+    function describeServicesResult(options: {
+      rolloutState: string;
+      runningCount: number;
+      desiredCount: number;
+      pendingCount: number;
+      lastServiceEvent: string;
+      extraDeployment?: boolean;
+    }): unknown {
+      return {
+        services: [
+          {
+            runningCount: options.runningCount,
+            desiredCount: options.desiredCount,
+            pendingCount: options.pendingCount,
+            deployments: [
+              {
+                status: "PRIMARY",
+                rolloutState: options.rolloutState,
+                runningCount: options.runningCount,
+                desiredCount: options.desiredCount,
+                pendingCount: options.pendingCount
+              },
+              ...(options.extraDeployment
+                ? [{ status: "ACTIVE", rolloutState: "IN_PROGRESS", runningCount: 1, desiredCount: 1 }]
+                : [])
+            ],
+            events: [{ message: options.lastServiceEvent }]
+          }
+        ]
+      };
+    }
+
+    it("polls DescribeServices until the rollout reaches COMPLETED, calling onProgress with in-flight snapshots then a final stable one", async () => {
+      const { service } = getSkillBrewService("django_app");
+      const config = loadFastStabilityConfig(5000, 1);
+      const adapter = new AwsEcsAdapter(config);
+
+      let call = 0;
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeServicesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        call += 1;
+        if (call === 1) {
+          return describeServicesResult({
+            rolloutState: "IN_PROGRESS",
+            runningCount: 0,
+            desiredCount: 1,
+            pendingCount: 1,
+            lastServiceEvent: "(service sample-service-stage) has begun draining connections"
+          });
+        }
+        return describeServicesResult({
+          rolloutState: "COMPLETED",
+          runningCount: 1,
+          desiredCount: 1,
+          pendingCount: 0,
+          lastServiceEvent: "(service sample-service-stage) has reached a steady state"
+        });
+      });
+
+      const snapshots: StabilityProgress[] = [];
+      await adapter.waitForStable(service, "stage", (progress) => {
+        snapshots.push(progress);
+      });
+
+      expect(call).toBe(2);
+      expect(snapshots).toHaveLength(2);
+      expect(snapshots[0]).toMatchObject({ rolloutState: "IN_PROGRESS", runningCount: 0, desiredCount: 1 });
+      expect(snapshots[1]).toMatchObject({ rolloutState: "COMPLETED", runningCount: 1, desiredCount: 1 });
+    });
+
+    it("throws ecs_not_stable once the configured timeout elapses while the rollout stays IN_PROGRESS", async () => {
+      const { service } = getSkillBrewService("django_app");
+      const config = loadFastStabilityConfig(20, 5);
+      const adapter = new AwsEcsAdapter(config);
+
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeServicesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        return describeServicesResult({
+          rolloutState: "IN_PROGRESS",
+          runningCount: 0,
+          desiredCount: 1,
+          pendingCount: 1,
+          lastServiceEvent: "still pulling image"
+        });
+      });
+
+      await expect(adapter.waitForStable(service, "stage")).rejects.toMatchObject({
+        statusCode: 504,
+        code: "ecs_not_stable"
+      });
+    });
+
+    it("throws ecs_not_stable immediately when ECS reports a FAILED rollout, without waiting for the timeout", async () => {
+      const { service } = getSkillBrewService("django_app");
+      const config = loadFastStabilityConfig(5000, 5000);
+      const adapter = new AwsEcsAdapter(config);
+
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeServicesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        return describeServicesResult({
+          rolloutState: "FAILED",
+          runningCount: 0,
+          desiredCount: 1,
+          pendingCount: 0,
+          lastServiceEvent: "task failed to start: CannotPullContainerError"
+        });
+      });
+
+      await expect(adapter.waitForStable(service, "stage")).rejects.toMatchObject({
+        statusCode: 504,
+        code: "ecs_not_stable"
+      });
+    });
+
+    it("does not consider the rollout stable while a lingering ACTIVE deployment remains alongside the COMPLETED PRIMARY", async () => {
+      const { service } = getSkillBrewService("django_app");
+      const config = loadFastStabilityConfig(20, 5);
+      const adapter = new AwsEcsAdapter(config);
+
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeServicesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        return describeServicesResult({
+          rolloutState: "COMPLETED",
+          runningCount: 1,
+          desiredCount: 1,
+          pendingCount: 0,
+          lastServiceEvent: "steady state",
+          extraDeployment: true
+        });
+      });
+
+      await expect(adapter.waitForStable(service, "stage")).rejects.toMatchObject({
+        statusCode: 504,
+        code: "ecs_not_stable"
+      });
+    });
+
+    it("tolerates a transient DescribeServices error by continuing to poll instead of failing the wait immediately", async () => {
+      const { service } = getSkillBrewService("django_app");
+      const config = loadFastStabilityConfig(5000, 1);
+      const adapter = new AwsEcsAdapter(config);
+
+      let call = 0;
+      stubSend(adapter, async (command) => {
+        if (!(command instanceof DescribeServicesCommand)) {
+          throw new Error("unexpected command sent to stub");
+        }
+        call += 1;
+        if (call === 1) {
+          throw new Error("ThrottlingException: Rate exceeded");
+        }
+        return describeServicesResult({
+          rolloutState: "COMPLETED",
+          runningCount: 1,
+          desiredCount: 1,
+          pendingCount: 0,
+          lastServiceEvent: "steady state"
+        });
+      });
+
+      const snapshots: StabilityProgress[] = [];
+      await adapter.waitForStable(service, "stage", (progress) => {
+        snapshots.push(progress);
+      });
+
+      expect(call).toBe(2);
+      expect(snapshots[0]?.message).toContain("DescribeServices error");
+      expect(snapshots[1]).toMatchObject({ rolloutState: "COMPLETED" });
+    });
   });
 });
