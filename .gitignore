@@ -226,3 +226,6 @@ __marimo__/
 # Claude Code local scratch (keep agent definitions, exclude local settings + memory)
 .claude/settings.local.json
 .claude/agent-memory/
+
+# Heimdall demo lifecycle script state (credentials/outputs from scripts/demo.sh up)
+scripts/.demo-state.txt

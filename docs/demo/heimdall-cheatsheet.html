@@ -1,0 +1,276 @@
+<style>
+  :root {
+    --ground: #f0f3f8;
+    --surface: #ffffff;
+    --surface-2: #f6f8fb;
+    --ink: #101a26;
+    --muted: #5a6b7e;
+    --line: #dde4ee;
+    --accent: #1f6feb;
+    --accent-soft: #e7f0fe;
+    --ok: #1a7f45;      --ok-soft: #e4f4ea;
+    --warn: #a85a08;    --warn-soft: #fbeed9;
+    --bad: #b42318;     --bad-soft: #fbe6e3;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(16,26,38,.05), 0 4px 16px rgba(16,26,38,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0b1220; --surface: #131d2c; --surface-2: #0f1826;
+      --ink: #e9eff7; --muted: #93a4b8; --line: #253346;
+      --accent: #5b9bff; --accent-soft: #17263f;
+      --ok: #4cbe79; --ok-soft: #12241a;
+      --warn: #e0a458; --warn-soft: #2a2012;
+      --bad: #f2857a; --bad-soft: #2c1512;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #f0f3f8; --surface: #ffffff; --surface-2: #f6f8fb;
+    --ink: #101a26; --muted: #5a6b7e; --line: #dde4ee;
+    --accent: #1f6feb; --accent-soft: #e7f0fe;
+    --ok: #1a7f45; --ok-soft: #e4f4ea; --warn: #a85a08; --warn-soft: #fbeed9;
+    --bad: #b42318; --bad-soft: #fbe6e3;
+    --shadow: 0 1px 2px rgba(16,26,38,.05), 0 4px 16px rgba(16,26,38,.05);
+  }
+  :root[data-theme="dark"] {
+    --ground: #0b1220; --surface: #131d2c; --surface-2: #0f1826;
+    --ink: #e9eff7; --muted: #93a4b8; --line: #253346;
+    --accent: #5b9bff; --accent-soft: #17263f;
+    --ok: #4cbe79; --ok-soft: #12241a; --warn: #e0a458; --warn-soft: #2a2012;
+    --bad: #f2857a; --bad-soft: #2c1512;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 56px; }
+
+  header.masthead {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 8px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .glyph {
+    width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+    background: var(--accent-soft); color: var(--accent);
+    display: grid; place-items: center; font-size: 22px;
+  }
+  h1 { font-size: 1.35rem; font-weight: 700; letter-spacing: -.01em; margin: 0; }
+  .brand small { color: var(--muted); font-size: .82rem; }
+  .oneliner {
+    color: var(--muted); font-size: .92rem; max-width: 60ch;
+    border-left: 3px solid var(--accent); padding-left: 12px; margin: 14px 0 22px;
+  }
+  .oneliner strong { color: var(--ink); font-weight: 600; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .span-2 { grid-column: 1 / -1; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
+  }
+  .card h2 {
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0 0 12px; font-weight: 700;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .n {
+    color: var(--accent); font-variant-numeric: tabular-nums;
+  }
+  .card p { margin: 0 0 8px; font-size: .9rem; }
+  .card p:last-child { margin-bottom: 0; }
+  .muted { color: var(--muted); }
+
+  code, .tag {
+    font-family: var(--mono); font-size: .82em;
+    background: var(--surface-2); border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+  }
+
+  /* flow */
+  ol.flow { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  ol.flow li { display: flex; gap: 10px; align-items: baseline; font-size: .9rem; }
+  ol.flow .step {
+    font-family: var(--mono); font-size: .72rem; color: var(--accent);
+    font-weight: 700; min-width: 20px;
+  }
+
+  /* table */
+  .tbl-scroll { overflow-x: auto; margin: 0 -2px; }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; }
+  tr:last-child td { border-bottom: none; }
+  td.env { font-family: var(--mono); font-weight: 600; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: .74rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .chip.ok  { color: var(--ok);   background: var(--ok-soft);   border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+  .chip.bad { color: var(--bad);  background: var(--bad-soft);  border-color: color-mix(in srgb, var(--bad) 25%, transparent); }
+  .chip.warn{ color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+  .chip.dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  /* callout */
+  .callout {
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+    background: linear-gradient(180deg, var(--accent-soft), transparent 140%);
+  }
+  ul.tight { margin: 6px 0 0; padding-left: 18px; font-size: .88rem; }
+  ul.tight li { margin-bottom: 6px; }
+  ul.tight li:last-child { margin-bottom: 0; }
+  ul.tight b { font-weight: 650; }
+
+  /* Q&A */
+  .qa { margin-bottom: 14px; }
+  .qa:last-child { margin-bottom: 0; }
+  .qa .q { font-weight: 650; font-size: .9rem; margin: 0 0 4px; }
+  .qa .q::before { content: "Q"; color: var(--accent); font-family: var(--mono); font-weight: 700; margin-right: 7px; }
+  .qa .a { font-size: .87rem; color: var(--ink); margin: 0; }
+  .qa .a .lead { color: var(--muted); }
+
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: .84rem; align-items: baseline; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; font-family: var(--mono); font-size: .8rem; word-break: break-all; }
+
+  .note {
+    margin-top: 16px; font-size: .82rem; color: var(--muted);
+    background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 22%, transparent);
+    border-radius: 10px; padding: 10px 14px;
+  }
+  .note b { color: var(--warn); }
+  footer { margin-top: 22px; text-align: center; color: var(--muted); font-size: .76rem; }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="brand">
+      <div class="glyph">🛡️</div>
+      <div>
+        <h1>Heimdall — Demo Cheat-Sheet</h1>
+        <small>Deployment control plane for ECS · dev → stage → preprod → prod</small>
+      </div>
+    </div>
+    <span class="chip ok dot">All systems healthy</span>
+  </header>
+
+  <p class="oneliner">
+    Heimdall <strong>doesn't build images and never touches GitHub.</strong> It takes an image
+    that CI already pushed to ECR and <strong>promotes it into an environment</strong> — moving the
+    pointer tag, rolling the ECS service, and watching until stable — all behind role, branch, and
+    lock guardrails, with a live log and one-click rollback.
+  </p>
+
+  <div class="grid">
+
+    <section class="card">
+      <h2>How it works — the flow</h2>
+      <ol class="flow">
+        <li><span class="step">1</span><span>Dev pushes → <b>CI</b> builds a Docker image, pushes immutable <code>sha-&lt;sha&gt;</code> to <b>ECR</b>.</span></li>
+        <li><span class="step">2</span><span>Operator picks a <b>release + environment</b> in Heimdall and clicks Deploy.</span></li>
+        <li><span class="step">3</span><span>Heimdall moves the env <b>pointer tag</b> (<code>dev</code>/<code>stg</code>/<code>preprod</code>/<code>prod</code>) to that image.</span></li>
+        <li><span class="step">4</span><span>Registers a new <b>ECS task-def</b> → <b>forces a new deployment</b> → <b>watches till stable</b> (live logs).</span></li>
+      </ol>
+      <p class="muted" style="margin-top:10px">Digest-based promotion = <b>the exact bytes tested in dev are what reach prod.</b> No rebuild between environments.</p>
+    </section>
+
+    <section class="card">
+      <h2>Guardrails</h2>
+      <ul class="tight">
+        <li><b>RBAC</b> — dev/stage: admin + user · preprod/prod: <b>admin only</b>.</li>
+        <li><b>Release-branch gate</b> — preprod/prod accept only <code>main</code> / <code>release/*</code>.</li>
+        <li><b>Locks</b> — one deploy per service+env at a time (no races).</li>
+        <li><b>Audit trail</b> — every deploy + every step stored (DynamoDB).</li>
+        <li><b>Rollback</b> — one click back to the previous task-def revision.</li>
+        <li><b>Async</b> — API returns instantly (202); a worker does the rollout; UI polls + live-logs.</li>
+      </ul>
+    </section>
+
+    <section class="card span-2">
+      <h2>Who can deploy what — the gate</h2>
+      <div class="tbl-scroll">
+        <table>
+          <thead>
+            <tr><th>Environment</th><th>Who can deploy</th><th>Which image branches are allowed</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="env">dev</td><td><span class="chip ok">admin + user</span></td><td><span class="chip ok">any branch</span> <span class="muted">— incl. feature branches (e.g. SBW-453xx)</span></td></tr>
+            <tr><td class="env">stage</td><td><span class="chip ok">admin + user</span></td><td><span class="chip ok">any branch</span></td></tr>
+            <tr><td class="env">preprod</td><td><span class="chip warn">admin only</span></td><td><span class="chip bad">only <code>main</code> / <code>release/*</code></span></td></tr>
+            <tr><td class="env">prod</td><td><span class="chip warn">admin only</span></td><td><span class="chip bad">only <code>main</code> / <code>release/*</code></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card span-2 callout">
+      <h2>Feature-branch deploy (e.g. SBW-453xx) — what happens</h2>
+      <ul class="tight">
+        <li><b>dev / stage:</b> <span class="chip ok">allowed</span> — it becomes the running dev/stage version and moves <b>that env's pointer</b>. This is where feature testing lives (mostly dev).</li>
+        <li><b>preprod / prod:</b> <span class="chip bad">blocked</span> — server returns <code>422 release_branch_required</code>; the UI disables the option. A feature build <b>can never reach preprod/prod.</b></li>
+        <li><b>Cross-environment isolation:</b> a dev deploy touches <b>only</b> the dev pointer + dev service. It <b>cannot change</b> what stage / preprod / prod are running — each env has its own pointer tag and ECS service. ✅</li>
+        <li><b>Honest nuance:</b> within dev it <b>does</b> replace dev's current version (deploy-to-dev = "this is now dev"). "Test without disturbing stable dev" is a separate <b>preview/canary env</b> — roadmap, not today.</li>
+      </ul>
+    </section>
+
+    <section class="card span-2">
+      <h2>Likely questions — quick answers</h2>
+
+      <div class="qa">
+        <p class="q">What if a deployment runs past Lambda's 15-min cap?</p>
+        <p class="a"><span class="lead">Three layers:</span>
+        <b>(1)</b> The watch self-limits at <b>600s</b>, under the <b>900s</b> Lambda ceiling — it writes a clean terminal result <i>before</i> any kill, so no hang.
+        <b>(2)</b> The deploy and the watcher are <b>decoupled</b> — ECS does the rollout itself, so even if the watcher died, the image still deploys.
+        <b>(3)</b> To scale past any time limit: move the watch to <b>Step Functions / EventBridge</b> + a <b>reconciler</b> for stuck records. Retries are 0, so nothing double-deploys.</p>
+      </div>
+
+      <div class="qa">
+        <p class="q">How does a new service get registered?</p>
+        <p class="a"><span class="lead">Add one <b>catalog entry</b></span> — <code>serviceId</code>, <code>ecrRepository</code>, <code>containerName</code>, and per-env <code>cluster/service/taskFamily/tag</code> + RBAC. Delivered via the bundled <code>service-catalog.json</code>, <code>SERVICE_CATALOG_JSON</code>, or <code>SERVICE_CATALOG_PATH</code>. <span class="muted">Prereqs: the ECS service + task family + ECR repo already exist, IAM covers ECR/ECS/<code>PassRole</code>, and the repo's CI pushes <code>sha-</code> images. Roadmap: an admin UI backed by DynamoDB (no redeploy).</span></p>
+      </div>
+
+      <div class="qa">
+        <p class="q">Explain it like I'm in 10th grade.</p>
+        <p class="a">Your app ships as <b>sealed boxes</b> (Docker images) a robot (CI) puts on a <b>shelf</b> (ECR). You run it in three rooms: <b>practice (dev), testing (stage), the real room (prod)</b>. <b>Heimdall is the stage manager</b> — it picks which box goes in which room, swaps it in, and watches like a <b>pizza tracker</b>. Rules stop half-finished boxes reaching the real room, and one button puts the old box back. The <b>same box you tested is the one players get</b> — no surprises.</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Demo runbook</h2>
+      <ol class="flow">
+        <li><span class="step">1</span><span>Push a commit to <code>dummy-deploy2dev-app</code> (edit <code>index.html</code>).</span></li>
+        <li><span class="step">2</span><span>CI builds → pushes <code>sha-&lt;sha&gt;</code> to ECR.</span></li>
+        <li><span class="step">3</span><span>Heimdall (<b>⌘⇧R</b>) → Sample Service → <b>dev</b> → pick the <code>sha-</code> (shows <code>· main</code>) → <b>Deploy</b>.</span></li>
+        <li><span class="step">4</span><span>History → <b>Logs</b> → live steps (spinner → ✓) → <b>succeeded</b>.</span></li>
+        <li><span class="step">5</span><span>Refresh the dev URL → your new page.</span></li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>Key facts</h2>
+      <dl class="facts">
+        <dt>Heimdall</dt><dd>cck2w7y34j.execute-api.us-east-1.amazonaws.com</dd>
+        <dt>Account</dt><dd>490004622023 · us-east-1</dd>
+        <dt>Cluster</dt><dd>deploy2dev-dev</dd>
+        <dt>dev URL</dt><dd>deploy2dev-dev-alb-…:80</dd>
+        <dt>stage / prod</dt><dd>same ALB :8081 / :8082</dd>
+      </dl>
+    </section>
+
+  </div>
+
+  <p class="note"><b>Narrate the wait:</b> each deploy takes ~5 min — the sandbox runs on one small <code>t3.micro</code> (memory-tight), so container start is slow. It is <b>not</b> a failure and <b>won't</b> false-fail — the Logs view shows it progressing the whole time. The fix (bigger instance + <code>MinHealthy 100</code> + circuit breaker → no wait, no 503) needs a sandbox re-provision.</p>
+
+  <footer>Heimdall deployment center · sandbox demo reference</footer>
+</div>
