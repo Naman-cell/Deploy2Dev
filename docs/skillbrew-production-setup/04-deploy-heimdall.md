@@ -113,8 +113,8 @@ curl -s "$API/health"          # → {"status":"ok",...}
 
 Then in a browser open `$API`, log in as the seed admin, and confirm:
 - **Deployment Center** lists all 13 services.
-- The **Environment** dropdown shows `dev, stage, preprod, prod`.
-- Selecting a service + `dev` lists real ECR releases (proves ECR read + catalog wiring).
+- Selecting a service lists its open GitHub pull requests, each matched against its pushed ECR
+  image by sanitized branch name (proves GitHub read + ECR read + catalog wiring).
 
 > If `/health` is OK but the UI login POST fails, it's almost always the web `API_BASE`. The
 > app strips a leading `/api` server-side, so the bundled UI works at the API root; if you

@@ -67,6 +67,19 @@ export const ReleaseSchema = z.object({
 
 export type Release = z.infer<typeof ReleaseSchema>;
 
+export interface OpenPullRequest {
+  number: number;
+  title: string;
+  headBranch: string;
+  baseBranch: string;
+  headSha: string;
+  updatedAt: string;
+  /** Sanitized branch name — the exact ECR tag CI pushes (branch-name-only). */
+  imageTag: string;
+  /** Matching ECR release, when the branch image has been pushed. */
+  release?: Release;
+}
+
 export const DeploymentEventSchema = z.object({
   deploymentId: z.string(),
   timestamp: z.string(),
@@ -170,39 +183,25 @@ export function classifyReleaseTag(tag: string): Release["source"] {
   if (tag.startsWith("prod-")) {
     return "prod";
   }
-  if (tag.startsWith("branch-") || tag.startsWith("user-") || tag.startsWith("sha-")) {
+  if (tag.startsWith("sha-")) {
     return "manual";
   }
-  return "unknown";
+  // Anything else is a branch-name tag: under CI's tagging convention, an image is either tagged
+  // with a recognized structured promotion tag (matched above) or with the sanitized branch name
+  // itself (e.g. `feature-login`, `main`, or — since sanitizeBranchName below always appends a
+  // trailing dash — `feature-login-`, `main-`). Both cases are "manual" (deployable to dev/stage,
+  // gated for preprod/prod via isBaseBranchEligibleForEnvironment).
+  return "manual";
 }
 
-// Matches CI's `branch-<sanitized-branch>-<shortsha>` tag convention. The branch group is
-// non-greedy so it stops expanding as soon as the remainder can be consumed as a one-or-more-dash
-// separator followed by a 7-40 char hex sha anchored to the end of the tag — this correctly
-// handles both the single-dash form (`branch-main-fa867dc`) and the double-dash form CI actually
-// produces when the sanitizer leaves a trailing separator dash (`branch-main--fa867dc`), and it
-// does not swallow a hex-looking suffix of the branch name itself (e.g.
-// `branch-feature-abcdef1-1234567` parses to branch `feature-abcdef1`, not `feature`).
-const RELEASE_BRANCH_TAG_PATTERN = /^branch-(.+?)-+[0-9a-f]{7,40}$/;
-
-/** Derives the source branch from an image's full set of ECR tags, or `undefined` if none of the
- * tags match the `branch-<branch>-<sha>` convention (e.g. an image only tagged `sha-<shortsha>`). */
-export function branchFromImageTags(tags: string[]): string | undefined {
-  for (const tag of tags) {
-    const match = RELEASE_BRANCH_TAG_PATTERN.exec(tag);
-    if (match) {
-      return match[1];
-    }
-  }
-  return undefined;
-}
-
-/** True for `main` and any sanitized `release-*`/unsanitized `release/*` branch name. */
-export function isReleaseBranch(branch: string | undefined): boolean {
-  if (!branch) {
-    return false;
-  }
-  return branch === "main" || branch.startsWith("release-") || branch.startsWith("release/");
+/** Sanitizes a git branch name exactly like CI does: `echo "$BRANCH" | tr -c 'a-zA-Z0-9.-' '-' |
+ * tr '[:upper:]' '[:lower:]'`. `echo` appends a trailing newline; `tr -c` replaces every
+ * character NOT in the allowed set — including that trailing newline — with `-`; command
+ * substitution (`$(...)`) only strips trailing *newlines*, not dashes. Net effect: every real
+ * CI-pushed tag ends with a literal trailing `-`. Do not "fix" this away — it must match CI
+ * exactly. Must stay in sync with the `Compute tag, platform` step in build-push.yml. */
+export function sanitizeBranchName(branch: string): string {
+  return `${branch.replace(/[^A-Za-z0-9.-]/g, "-").toLowerCase()}-`;
 }
 
 /** preprod/prod are release-gated; dev/stage are unrestricted. */
@@ -210,13 +209,46 @@ export function requiresReleaseBranch(environment: Environment): boolean {
   return environment === "preprod" || environment === "prod";
 }
 
-/** Server-authoritative (and UI-mirrored) gate: preprod/prod only accept images built from a
- * release branch; dev/stage accept anything. */
-export function isReleaseEligibleForEnvironment(
+/** Maps each environment to the set of git base-branch names that PRs targeting it should match.
+ * A PR is listable for an environment when its `base_branch` appears in this set. This mirrors
+ * CI's branch-protection model: dev/stage accept PRs from any branch, while preprod/prod only
+ * accept PRs that target `main` or `release/*`. */
+export function baseBranchesForEnvironment(environment: Environment): string[] {
+  switch (environment) {
+    case "dev":
+      return ["dev"];
+    case "stage":
+      return ["staging", "stage"];
+    case "preprod":
+      return ["preprod", "main", "release"];
+    case "prod":
+      return ["main", "release", "prod"];
+    default: {
+      const _exhaustive: never = environment;
+      void _exhaustive;
+      return [];
+    }
+  }
+}
+
+/** True when a PR's base branch is eligible to be listed for the given environment.
+ * For dev/stage this is an exact match against the environment's branch set; for preprod/prod
+ * it also accepts any branch starting with `release/`. */
+export function isBaseBranchEligibleForEnvironment(
   environment: Environment,
-  release: Pick<Release, "sourceBranch">
+  baseBranch: string | undefined
 ): boolean {
-  return !requiresReleaseBranch(environment) || isReleaseBranch(release.sourceBranch);
+  if (!baseBranch) {
+    return false;
+  }
+  const normalized = baseBranch.endsWith("-") ? baseBranch.slice(0, -1) : baseBranch;
+  const eligible = baseBranchesForEnvironment(environment);
+  return (
+    eligible.includes(normalized) ||
+    eligible.includes(baseBranch) ||
+    (requiresReleaseBranch(environment) &&
+      (normalized.startsWith("release/") || normalized.startsWith("release-")))
+  );
 }
 
 export function environmentPointerTags(service: DeploymentService): Set<string> {

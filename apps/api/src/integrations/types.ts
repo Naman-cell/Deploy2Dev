@@ -1,4 +1,5 @@
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
+import type { GitHubAdapter } from "./github";
 
 export interface RegistryAdapter {
   listReleases(service: DeploymentService): Promise<Release[]>;
@@ -47,4 +48,5 @@ export interface EcsAdapter {
 export interface CloudAdapters {
   registry: RegistryAdapter;
   ecs: EcsAdapter;
+  github: GitHubAdapter;
 }

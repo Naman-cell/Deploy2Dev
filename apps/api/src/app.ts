@@ -133,6 +133,21 @@ export function createApp(
     }
   });
 
+  app.get("/services/:serviceId/open-prs", requireAuth, async (request, response, next) => {
+    try {
+      const environment = request.query.environment
+        ? EnvironmentSchema.parse(request.query.environment)
+        : undefined;
+      const prs = await deploymentCenter.listOpenPullRequests(
+        requireParam(request.params.serviceId, "serviceId"),
+        environment
+      );
+      response.json({ pullRequests: prs });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/services/:serviceId/current", requireAuth, async (request, response, next) => {
     try {
       const environment = EnvironmentSchema.parse(request.query.environment);

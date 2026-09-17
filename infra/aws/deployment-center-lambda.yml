@@ -27,6 +27,13 @@ Parameters:
     Type: String
     Default: ""
     Description: Full ECR repository URI for the sample service. Defaults to this account and region.
+  GithubToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      GitHub API token for listing open PRs. Optional — leave blank for public repos (subject to
+      GitHub's lower unauthenticated rate limit); required for private repos.
 
 Conditions:
   HasCustomEcrRepositoryUri: !Not [!Equals [!Ref EcrRepositoryUri, ""]]
@@ -186,6 +193,7 @@ Resources:
           DEPLOYMENTS_TABLE_NAME: !Ref DeploymentsTable
           DEPLOYMENT_EVENTS_TABLE_NAME: !Ref DeploymentEventsTable
           LOCKS_TABLE_NAME: !Ref LocksTable
+          GITHUB_TOKEN: !Ref GithubToken
 
   ApiFunctionEventInvokeConfig:
     Type: AWS::Lambda::EventInvokeConfig

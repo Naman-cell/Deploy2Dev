@@ -57,8 +57,9 @@ preprod/prod, enabled on dev/stage.
 ## Doing a deploy (operator steps)
 
 1. Open the Heimdall UI (the `ApiUrl`), log in.
-2. **Deployment Center** → pick the **Microservice** and **Environment**.
-3. Pick the **Release** — an immutable `sha-<sha>` (not an env pointer tag).
+2. **Deployment Center** → pick the **Microservice**.
+3. Pick an **open pull request** from the list — its ECR image (tagged with the sanitized branch
+   name) is deployed to **dev**.
 4. **Deploy** → confirm. The API returns **202 immediately** and the row shows
    `pending → running → succeeded` as the UI polls. **It does not block the browser** even
    though the ECS rollout takes 30–120s (this is the async-worker design; the Lambda self-invokes

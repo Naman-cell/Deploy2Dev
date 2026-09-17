@@ -2,7 +2,7 @@
   {
     "serviceId": "django_app",
     "name": "Django API",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-django_app",
+    "githubRepository": "Brudite-Pvt-Ltd/SkillBrew_BE",
     "ecrRepository": "skillbrew-be",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-be",
     "containerName": "django_app",
@@ -42,7 +42,7 @@
   {
     "serviceId": "ai_interview",
     "name": "AI Interview",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-ai_interview",
+    "githubRepository": "Brudite-Pvt-Ltd/SKB-Interview",
     "ecrRepository": "skillbrew_ai",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew_ai",
     "containerName": "ai_interview",
@@ -82,7 +82,7 @@
   {
     "serviceId": "resume_analyzer",
     "name": "Resume Analyzer",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-resume_analyzer",
+    "githubRepository": "Brudite-Pvt-Ltd/Resume-Analyzer",
     "ecrRepository": "resume-analyzer",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/resume-analyzer",
     "containerName": "resume_analyzer",
@@ -122,7 +122,7 @@
   {
     "serviceId": "skb_payment",
     "name": "Payments",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-skb_payment",
+    "githubRepository": "Brudite-Pvt-Ltd/skillbrew-payments",
     "ecrRepository": "skb-payments",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skb-payments",
     "containerName": "skb_payment",
@@ -162,7 +162,7 @@
   {
     "serviceId": "notification-api",
     "name": "Notification API",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-notification-api",
+    "githubRepository": "Brudite-Pvt-Ltd/service-skb-notification",
     "ecrRepository": "notification-api",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/notification-api",
     "containerName": "notification-api",
@@ -202,7 +202,7 @@
   {
     "serviceId": "notification-worker",
     "name": "Notification Worker",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-notification-worker",
+    "githubRepository": "Brudite-Pvt-Ltd/skillbrew-blogs-be",
     "ecrRepository": "notification-worker",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/notification-worker",
     "containerName": "notification-worker",
@@ -242,7 +242,7 @@
   {
     "serviceId": "skillbrew-agent",
     "name": "SkillBrew Agent",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-agent",
+    "githubRepository": "Brudite-Pvt-Ltd/ai-sourcing-agent",
     "ecrRepository": "skillbrew-agent",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-agent",
     "containerName": "skillbrew-agent",
@@ -282,7 +282,7 @@
   {
     "serviceId": "skillbrew-agent-daemon",
     "name": "Agent Daemon",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-agent-daemon",
+    "githubRepository": "Brudite-Pvt-Ltd/brewtext-editor",
     "ecrRepository": "skillbrew-agent-daemon",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-agent-daemon",
     "containerName": "skillbrew-agent-daemon",
@@ -322,7 +322,7 @@
   {
     "serviceId": "skillbrew-reward",
     "name": "Rewards",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-skillbrew-reward",
+    "githubRepository": "Brudite-Pvt-Ltd/skb-badge-cert-svc",
     "ecrRepository": "skillbrew-reward",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-reward",
     "containerName": "skillbrew-reward",
@@ -362,7 +362,7 @@
   {
     "serviceId": "public_app",
     "name": "Public App",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-public_app",
+    "githubRepository": "Brudite-Pvt-Ltd/skillbrew-public",
     "ecrRepository": "skillbrew-fe",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-fe",
     "containerName": "public_app",
@@ -402,7 +402,7 @@
   {
     "serviceId": "developer_app",
     "name": "Developer App",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-developer_app",
+    "githubRepository": "Brudite-Pvt-Ltd/skillbrew-developer",
     "ecrRepository": "skillbrew-app-fe",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-app-fe",
     "containerName": "developer_app",
@@ -442,7 +442,7 @@
   {
     "serviceId": "organization_app",
     "name": "Organization App",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-organization_app",
+    "githubRepository": "Brudite-Pvt-Ltd/skillbrew-organization",
     "ecrRepository": "skillbrew-org-fe",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-org-fe",
     "containerName": "organization_app",
@@ -482,7 +482,7 @@
   {
     "serviceId": "admin_app",
     "name": "Admin App",
-    "githubRepository": "Brudite-Pvt-Ltd/TODO-admin_app",
+    "githubRepository": "Brudite-Pvt-Ltd/SkillBrew_Admin_Panel",
     "ecrRepository": "skillbrew-fe-admin",
     "ecrRepositoryUri": "741005527903.dkr.ecr.ap-south-1.amazonaws.com/skillbrew-fe-admin",
     "containerName": "admin_app",

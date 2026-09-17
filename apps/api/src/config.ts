@@ -23,6 +23,9 @@ export interface AppConfig {
   seedAdminEmail: string;
   seedAdminPassword: string;
   services: DeploymentService[];
+  /** GitHub API token for listing open PRs. Optional — public repos work unauthenticated
+   * (subject to GitHub's lower unauthenticated rate limit). */
+  githubToken?: string;
 }
 
 function readRequired(name: string, fallback?: string): string {
@@ -164,6 +167,7 @@ export function loadConfig(): AppConfig {
       (dataStore === "memory"
         ? "local-development-admin-password"
         : readRequired("SEED_ADMIN_PASSWORD")),
-    services: loadServiceCatalog()
+    services: loadServiceCatalog(),
+    githubToken: process.env.GITHUB_TOKEN
   };
 }

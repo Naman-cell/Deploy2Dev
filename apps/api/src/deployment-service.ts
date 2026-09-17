@@ -5,13 +5,16 @@ import {
   type DeploymentEvent,
   type DeploymentService,
   type Environment,
-  isReleaseEligibleForEnvironment,
+  isBaseBranchEligibleForEnvironment,
+  type OpenPullRequest,
   type Release,
+  requiresReleaseBranch,
   type Role
 } from "@heimdall/shared";
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config";
 import { AppError } from "./errors";
+import { enrichOpenPullRequests } from "./integrations/github";
 import type { CloudAdapters } from "./integrations/types";
 import type { Logger } from "./logger";
 import type { DataStore } from "./store/types";
@@ -44,10 +47,30 @@ export class DeploymentCenterService {
 
   // `environment` is kept in the public signature (and validated by the route) for API
   // stability, but releases are not filtered per environment: the registry adapter returns
-  // every release for the service regardless of environment.
+  // every release for the service regardless of environment. Release-branch eligibility is
+  // gated client-side in the UI and via PR base-branch filtering, not here.
   public async listReleases(serviceId: string, _environment: Environment): Promise<Release[]> {
     const service = this.getService(serviceId);
     return this.cloud.registry.listReleases(service);
+  }
+
+  // Fetches open PRs and enriches each with the ECR release matching its branch-sanitized image
+  // tag. Filters out PRs whose base branch is not eligible for the given environment via
+  // isBaseBranchEligibleForEnvironment (e.g., a PR targeting `main` is only listable for prod).
+  public async listOpenPullRequests(
+    serviceId: string,
+    environment?: Environment
+  ): Promise<OpenPullRequest[]> {
+    const service = this.getService(serviceId);
+    const prs = await this.cloud.github.listOpenPullRequests(service);
+    const eligible = environment
+      ? prs.filter((pr) => isBaseBranchEligibleForEnvironment(environment, pr.baseBranch))
+      : prs;
+    // Only surface PRs whose image has been pushed (matching ECR release present).
+    // A PR targeting an eligible base branch is not deployable until CI builds and
+    // pushes the branch image.
+    const enriched = await enrichOpenPullRequests(service, eligible, this.cloud.registry, this.logger);
+    return enriched.filter((pr) => pr.release);
   }
 
   public async currentState(serviceId: string, environment: Environment) {
@@ -79,13 +102,14 @@ export class DeploymentCenterService {
       throw new AppError(404, "release_not_found", "Selected release was not found in ECR");
     }
 
-    if (!isReleaseEligibleForEnvironment(request.environment, selected)) {
-      throw new AppError(
-        422,
-        "release_branch_required",
-        `The ${request.environment} environment only accepts images built from a release branch (main or release/*). Selected image branch: ${selected.sourceBranch ?? "unknown"}.`
-      );
-    }
+    // Server-side release eligibility gate (defense-in-depth: the UI + listOpenPullRequests
+    // filtering are bypassable via direct POST). For release-gated environments (preprod/prod),
+    // allow the deploy when (a) an eligible open PR's image tag matches the selected tag — i.e. a
+    // PR targeting an eligible base branch whose head-branch image was pushed — or (b) the tag
+    // itself is a release-branch image (`main-` / `release-*-`), covering direct deploys with no
+    // open PR. If the GitHub call fails, log and fall through to the tag heuristic alone:
+    // fail-closed for feature tags, fail-open for main/release tags.
+    await this.assertReleaseEligibleForEnvironment(service.serviceId, request.environment, selected);
 
     const deploymentId = randomUUID();
     const correlationId = randomUUID();
@@ -372,6 +396,46 @@ export class DeploymentCenterService {
     if (!canDeploy(role, environment)) {
       throw new AppError(403, "deployment_not_allowed", "You are not allowed to deploy this environment");
     }
+  }
+
+  // Server-side release eligibility for preprod/prod. dev/stage are unrestricted (no extra calls).
+  // Eligibility is PR-based, not tag-based: PR images are tagged by head-branch name, so a tag like
+  // `feature-login-` is eligible iff an eligible open PR (base branch allowed for the environment)
+  // produced it. The tag heuristic covers direct deploys of release-branch images with no open PR.
+  private async assertReleaseEligibleForEnvironment(
+    serviceId: string,
+    environment: Environment,
+    selected: Release
+  ): Promise<void> {
+    if (!requiresReleaseBranch(environment)) {
+      return;
+    }
+
+    let eligiblePrs: OpenPullRequest[] | undefined;
+    try {
+      eligiblePrs = await this.listOpenPullRequests(serviceId, environment);
+    } catch (error) {
+      this.logger.warn("beginDeployment: listOpenPullRequests failed, falling back to tag heuristic", {
+        serviceId,
+        environment,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    if (eligiblePrs?.some((pr) => pr.imageTag === selected.tag)) {
+      return;
+    }
+
+    const candidate = selected.tag.endsWith("-") ? selected.tag.slice(0, -1) : selected.tag;
+    if (isBaseBranchEligibleForEnvironment(environment, candidate)) {
+      return;
+    }
+
+    throw new AppError(
+      403,
+      "release_not_eligible_for_environment",
+      "Selected release is not eligible for this environment"
+    );
   }
 
   // Waits for the ECS service to stabilize, streaming deduped `ecs_wait_stable` progress events as

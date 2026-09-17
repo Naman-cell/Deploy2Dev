@@ -94,6 +94,45 @@ async function startHarness(trigger: DeploymentTrigger = new FailingTrigger()) {
   return { store, deploymentCenter, port, token };
 }
 
+describe("GET /services/:serviceId/open-prs", () => {
+  it("returns 401 without a bearer token", async () => {
+    const { port } = await startHarness();
+
+    const response = await fetch(`http://127.0.0.1:${port}/services/sample-service/open-prs`);
+
+    expect(response.status).toBe(401);
+  });
+
+  it("returns only PRs whose image has been pushed (matching ECR release present)", async () => {
+    const { port, token } = await startHarness();
+
+    const response = await fetch(`http://127.0.0.1:${port}/services/sample-service/open-prs`, {
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      pullRequests: Array<{ number: number; headBranch: string; imageTag: string; release?: unknown }>;
+    };
+    // Every returned PR has a matching ECR release (image has been pushed).
+    expect(body.pullRequests.every((pr) => pr.release)).toBe(true);
+    // Only the PR whose branch matches the seeded `feature-login-` release survives the filter.
+    expect(body.pullRequests).toHaveLength(1);
+    expect(body.pullRequests[0]!.headBranch).toBe("feature-login");
+    expect(body.pullRequests[0]!.imageTag).toBe("feature-login-");
+  });
+
+  it("returns 404 for a service that is not in the catalog", async () => {
+    const { port, token } = await startHarness();
+
+    const response = await fetch(`http://127.0.0.1:${port}/services/does-not-exist/open-prs`, {
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(response.status).toBe(404);
+  });
+});
+
 describe("POST /deployments trigger-dispatch failure", () => {
   it("returns 502, releases the lock, and marks the deployment failed (not stuck pending) when the trigger throws", async () => {
     const { store, port, token } = await startHarness();

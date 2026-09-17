@@ -1,6 +1,5 @@
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
 import {
-  branchFromImageTags,
   classifyReleaseTag,
   environmentPointerTags,
   environments
@@ -17,27 +16,26 @@ function environmentConfig(service: DeploymentService, environment: Environment)
 
 const now = new Date().toISOString();
 
-/** Derives `sourceBranch` from the release's own tag (mirroring how the real AWS adapter derives
- * it from all of a digest's ECR tags), so mock fixtures don't have to hand-maintain a value that
- * duplicates what's already encoded in `tag`. */
+/** Derives `sourceBranch` from the release's own tag (the tag IS the branch name under the new
+ * branch-name tagging convention), so mock fixtures don't have to hand-maintain a duplicate value. */
 function withSourceBranch(release: Omit<Release, "sourceBranch">): Release {
-  return { ...release, sourceBranch: branchFromImageTags([release.tag]) };
+  return { ...release, sourceBranch: release.tag };
 }
 
 const manualReleases: Release[] = [
   // Non-release-eligible: a feature branch build. Exercises the gate's rejection path for
-  // preprod/prod while remaining deployable to dev/stage.
+  // preprod/prod while remaining deployable to dev/stage. Tag carries the trailing dash real CI
+  // always produces (see sanitizeBranchName).
   withSourceBranch({
-    tag: "branch-feature-login-a1b2c3d",
+    tag: "feature-login-",
     digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     pushedAt: now,
     source: "manual",
     isEnvironmentPointer: false
   }),
-  // Release-eligible: a `main` branch build, tagged with the double-dash form CI actually
-  // produces (`branch-<branch>--<shortsha>`). Exercises the gate's success path for preprod/prod.
+  // Release-eligible: a `main` branch build. Exercises the gate's success path for preprod/prod.
   withSourceBranch({
-    tag: "branch-main--fa867dc",
+    tag: "main-",
     digest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
     pushedAt: now,
     source: "manual",

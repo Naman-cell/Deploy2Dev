@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config";
 import { DeploymentCenterService } from "./deployment-service";
 import { createCloudAdapters } from "./integrations";
+import { RealGitHubAdapter } from "./integrations/github";
 import { resetMockRegistry } from "./integrations/mock-adapters";
 import type { CloudAdapters } from "./integrations/types";
 import { logger } from "./logger";
@@ -430,69 +431,107 @@ describe("DeploymentCenterService", () => {
     });
   });
 
-  describe("release-branch provenance gate", () => {
+  describe("release eligibility gate (beginDeployment)", () => {
+    // Server-side defense-in-depth: beginDeployment rejects releases that are not eligible for
+    // preprod/prod even when called directly (bypassing the UI + listOpenPullRequests filtering).
+    // Eligibility is PR-based (an eligible open PR whose imageTag matches the selected tag) with a
+    // tag-heuristic fallback for direct deploys of release-branch images (`main-`, `release-*-`).
     const adminActor = { userId: "admin", email: "admin@example.com", role: "admin" as const };
     const featureBranchRequest = (environment: "dev" | "stage" | "preprod" | "prod") => ({
       serviceId: "sample-service",
       environment,
-      imageTag: "branch-feature-login-a1b2c3d",
+      imageTag: "feature-login-",
       imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     });
     const mainBranchRequest = (environment: "dev" | "stage" | "preprod" | "prod") => ({
       serviceId: "sample-service",
       environment,
-      imageTag: "branch-main--fa867dc",
+      imageTag: "main-",
       imageDigest: "sha256:5555555555555555555555555555555555555555555555555555555555555555"
     });
 
-    it("rejects a feature-branch image deployed to prod with 422 release_branch_required", async () => {
+    it("rejects a feature-branch image for prod when no eligible open PR matches the tag", async () => {
       const { service } = await createHarness("sandbox");
 
       await expect(service.beginDeployment(featureBranchRequest("prod"), adminActor)).rejects.toMatchObject({
-        statusCode: 422,
-        code: "release_branch_required"
+        statusCode: 403,
+        code: "release_not_eligible_for_environment"
       });
     });
 
-    it("rejects a feature-branch image deployed to preprod with 422 release_branch_required", async () => {
+    it("rejects a feature-branch image for preprod when no eligible open PR matches the tag", async () => {
       const { service } = await createHarness("sandbox");
 
-      await expect(service.beginDeployment(featureBranchRequest("preprod"), adminActor)).rejects.toMatchObject({
-        statusCode: 422,
-        code: "release_branch_required"
+      await expect(
+        service.beginDeployment(featureBranchRequest("preprod"), adminActor)
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        code: "release_not_eligible_for_environment"
       });
     });
 
-    it("allows a main-branch image deployed to prod", async () => {
-      const { service } = await createHarness("sandbox");
+    it("allows a main-branch image for prod with no open PRs (tag heuristic)", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([]);
 
-      const deployment = await service.createDeployment(mainBranchRequest("prod"), adminActor);
+      const deployment = await service.beginDeployment(mainBranchRequest("prod"), adminActor);
 
-      expect(deployment.status).toBe("succeeded");
+      expect(deployment.status).toBe("pending");
+      expect(deployment.selectedImageTag).toBe("main-");
     });
 
-    it("allows a main-branch image deployed to preprod", async () => {
-      const { service } = await createHarness("sandbox");
+    it("allows a feature-branch image for prod when an eligible open PR produced that tag", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      // Head branch `feature-login` sanitizes to imageTag `feature-login-` (matching the requested
+      // tag and its pushed ECR release); base `main` is eligible for prod.
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 20,
+          title: "Feature login",
+          headBranch: "feature-login",
+          baseBranch: "main",
+          headSha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+          updatedAt: "2026-01-20T00:00:00.000Z"
+        }
+      ]);
 
-      const deployment = await service.createDeployment(mainBranchRequest("preprod"), adminActor);
+      const deployment = await service.beginDeployment(featureBranchRequest("prod"), adminActor);
 
-      expect(deployment.status).toBe("succeeded");
+      expect(deployment.status).toBe("pending");
+      expect(deployment.selectedImageTag).toBe("feature-login-");
     });
 
-    it("allows a feature-branch image deployed to dev", async () => {
-      const { service } = await createHarness("sandbox");
+    it("allows a dev deploy of a feature-branch image without calling GitHub", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      const githubSpy = vi.spyOn(cloud.github, "listOpenPullRequests");
 
-      const deployment = await service.createDeployment(featureBranchRequest("dev"), adminActor);
+      const deployment = await service.beginDeployment(featureBranchRequest("dev"), adminActor);
 
-      expect(deployment.status).toBe("succeeded");
+      expect(deployment.status).toBe("pending");
+      expect(githubSpy).not.toHaveBeenCalled();
     });
 
-    it("allows a feature-branch image deployed to stage", async () => {
-      const { service } = await createHarness("sandbox");
+    it("allows a stage deploy of a feature-branch image without calling GitHub", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      const githubSpy = vi.spyOn(cloud.github, "listOpenPullRequests");
 
-      const deployment = await service.createDeployment(featureBranchRequest("stage"), adminActor);
+      const deployment = await service.beginDeployment(featureBranchRequest("stage"), adminActor);
 
-      expect(deployment.status).toBe("succeeded");
+      expect(deployment.status).toBe("pending");
+      expect(githubSpy).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the tag heuristic when GitHub is down: main- allowed, feature tag rejected", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockRejectedValue(new Error("GitHub down"));
+
+      const allowed = await service.beginDeployment(mainBranchRequest("prod"), adminActor);
+      expect(allowed.status).toBe("pending");
+
+      await expect(service.beginDeployment(featureBranchRequest("prod"), adminActor)).rejects.toMatchObject({
+        statusCode: 403,
+        code: "release_not_eligible_for_environment"
+      });
     });
   });
 
@@ -569,15 +608,15 @@ describe("DeploymentCenterService", () => {
     it("deploying to prod promotes the wire tag prod", async () => {
       const { service, cloud } = await createHarness("skillbrew");
       const djangoApp = service.getService("django_app");
-      // prod requires a release-branch image (main or release/*); the mock fixture tagged
-      // `branch-main--fa867dc` derives `sourceBranch: "main"` and is release-eligible.
+      // prod requires a release-branch image (main or release/*); the tag heuristic strips the
+      // trailing dash real CI always produces, so `main-` is release-eligible.
       const digest = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
 
       const deployment = await service.createDeployment(
         {
           serviceId: "django_app",
           environment: "prod",
-          imageTag: "branch-main--fa867dc",
+          imageTag: "main-",
           imageDigest: digest
         },
         adminActor
@@ -601,6 +640,251 @@ describe("DeploymentCenterService", () => {
           userActor
         )
       ).rejects.toMatchObject({ statusCode: 403 });
+    });
+  });
+
+  describe("listOpenPullRequests", () => {
+    it("returns only PRs whose sanitized branch tag matches a pushed ECR release", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 7,
+          title: "Fix login redirect loop",
+          headBranch: "feature-login",
+          baseBranch: "main",
+          headSha: "a1b2c3d",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        },
+        {
+          number: 8,
+          title: "Unrelated chore (no image pushed)",
+          headBranch: "chore/deps-bump",
+          baseBranch: "main",
+          headSha: "b2c3d4e",
+          updatedAt: "2026-01-02T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service");
+
+      // PR #8 targets main but has no matching ECR release (its branch sanitizes to
+      // chore-deps-bump-, which doesn't exist in the mock registry), so it's filtered out.
+      expect(prs).toHaveLength(1);
+      expect(prs[0]?.number).toBe(7);
+      expect(prs[0]?.imageTag).toBe("feature-login-");
+      expect(prs[0]?.release?.tag).toBe("feature-login-");
+    });
+
+    it("returns an empty list cleanly, without any network call, for a TODO- placeholder repo (real skip guard)", async () => {
+      // Exercises the real RealGitHubAdapter skip guard directly: services that still carry a
+      // `TODO-<name>` placeholder repo in the catalog must short-circuit before touching the network.
+      // (The built-in SkillBrew catalog now has real repos for django_app etc., so we synthesize
+      // a service with a TODO- marker to exercise the guard against the real adapter.)
+      const { service } = await createHarness("skillbrew");
+      const djangoApp = service.getService("django_app");
+      const fakeService = { ...djangoApp, githubRepository: "Brudite-Pvt-Ltd/TODO-django_app" };
+
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        await expect(new RealGitHubAdapter().listOpenPullRequests(fakeService)).resolves.toEqual([]);
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("logs a warning and returns an empty list when listReleases fails (no enrichment possible)", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 9,
+          title: "Feature branch",
+          headBranch: "feature-login",
+          baseBranch: "main",
+          headSha: "a1b2c3d",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        }
+      ]);
+      vi.spyOn(cloud.registry, "listReleases").mockRejectedValueOnce(new Error("registry boom"));
+
+      const prs = await service.listOpenPullRequests("sample-service");
+
+      // With listReleases failing, enrichment can't resolve any release, so every PR
+      // is filtered out and the warning is logged (see test output for the log assertion).
+      expect(prs).toHaveLength(0);
+    });
+
+    it("lists only PRs targeting dev's base branch when environment is dev", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 1,
+          title: "PR targeting dev",
+          headBranch: "feature-login",
+          baseBranch: "dev",
+          headSha: "a1b2c3d",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        },
+        {
+          number: 2,
+          title: "PR targeting main",
+          headBranch: "chore/deps-bump",
+          baseBranch: "main",
+          headSha: "b2c3d4e",
+          updatedAt: "2026-01-02T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service", "dev");
+      // PR #2 is filtered out twice: (1) base branch `main` is not eligible for dev,
+      // (2) head branch `chore/deps-bump` has no matching ECR release.
+      expect(prs).toHaveLength(1);
+      expect(prs[0]?.number).toBe(1);
+    });
+
+    it("lists only PRs targeting staging's base branch when environment is stage", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 3,
+          title: "PR targeting staging",
+          headBranch: "feature-login",
+          baseBranch: "staging",
+          headSha: "c3d4e5f",
+          updatedAt: "2026-01-03T00:00:00.000Z"
+        },
+        {
+          number: 4,
+          title: "PR targeting stage",
+          headBranch: "main",
+          baseBranch: "stage",
+          headSha: "d4e5f6a",
+          updatedAt: "2026-01-04T00:00:00.000Z"
+        },
+        {
+          number: 5,
+          title: "PR targeting dev (ineligible base + no image)",
+          headBranch: "feat-c",
+          baseBranch: "dev",
+          headSha: "e5f6a7b",
+          updatedAt: "2026-01-05T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service", "stage");
+      // PR #5 is filtered out: base branch `dev` not eligible for stage + no matching image.
+      expect(prs).toHaveLength(2);
+      expect(prs.map((pr) => pr.number)).toEqual([3, 4]);
+    });
+
+    it("lists only PRs targeting preprod's base branches (preprod, main, release/*) when environment is preprod", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 6,
+          title: "PR targeting preprod",
+          headBranch: "feature-login",
+          baseBranch: "preprod",
+          headSha: "f6a7b8c",
+          updatedAt: "2026-01-06T00:00:00.000Z"
+        },
+        {
+          number: 7,
+          title: "PR targeting main",
+          headBranch: "main",
+          baseBranch: "main",
+          headSha: "a7b8c9d",
+          updatedAt: "2026-01-07T00:00:00.000Z"
+        },
+        {
+          number: 8,
+          title: "PR targeting release",
+          headBranch: "main",
+          baseBranch: "release/1.0",
+          headSha: "b8c9d0e",
+          updatedAt: "2026-01-08T00:00:00.000Z"
+        },
+        {
+          number: 9,
+          title: "PR targeting dev",
+          headBranch: "feat-w",
+          baseBranch: "dev",
+          headSha: "c9d0e1f",
+          updatedAt: "2026-01-09T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service", "preprod");
+      expect(prs).toHaveLength(3);
+      expect(prs.map((pr) => pr.number)).toEqual([6, 7, 8]);
+    });
+
+    it("lists only PRs targeting prod's base branches (main, release/*, prod) when environment is prod", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 10,
+          title: "PR targeting main",
+          headBranch: "main",
+          baseBranch: "main",
+          headSha: "d0e1f2a",
+          updatedAt: "2026-01-10T00:00:00.000Z"
+        },
+        {
+          number: 11,
+          title: "PR targeting prod",
+          headBranch: "feature-login",
+          baseBranch: "prod",
+          headSha: "e1f2a3b",
+          updatedAt: "2026-01-11T00:00:00.000Z"
+        },
+        {
+          number: 12,
+          title: "PR targeting release-*",
+          headBranch: "main",
+          baseBranch: "release-2.0",
+          headSha: "f2a3b4c",
+          updatedAt: "2026-01-12T00:00:00.000Z"
+        },
+        {
+          number: 13,
+          title: "PR targeting preprod",
+          headBranch: "feat-d",
+          baseBranch: "preprod",
+          headSha: "a3b4c5d",
+          updatedAt: "2026-01-13T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service", "prod");
+      expect(prs).toHaveLength(3);
+      expect(prs.map((pr) => pr.number)).toEqual([10, 11, 12]);
+    });
+
+    it("lists all PRs when no environment is given (no filter)", async () => {
+      const { service, cloud } = await createHarness("sandbox");
+      vi.spyOn(cloud.github, "listOpenPullRequests").mockResolvedValueOnce([
+        {
+          number: 1,
+          title: "PR targeting dev",
+          headBranch: "feature-login",
+          baseBranch: "dev",
+          headSha: "a1b2c3d",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        },
+        {
+          number: 2,
+          title: "PR targeting main",
+          headBranch: "main",
+          baseBranch: "main",
+          headSha: "b2c3d4e",
+          updatedAt: "2026-01-02T00:00:00.000Z"
+        }
+      ]);
+
+      const prs = await service.listOpenPullRequests("sample-service");
+      expect(prs).toHaveLength(2);
     });
   });
 });
