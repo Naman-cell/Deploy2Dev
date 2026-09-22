@@ -1,0 +1,777 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  Activity,
+  CheckCircle2,
+  History,
+  Loader2,
+  Rocket,
+  ScrollText,
+  Shield,
+  Users,
+  X,
+  XCircle
+} from "lucide-react";
+import type { CurrentServiceState, Deployment, DeploymentEvent, DeploymentService, Environment, OpenPullRequest, User } from "@heimdall/shared";
+import { canDeploy, environments } from "@heimdall/shared";
+import { api, ApiError } from "./api";
+import "./styles.css";
+
+type View = "history" | "deploy" | "admin";
+
+interface Session {
+  token: string;
+  user: User;
+}
+
+function formatDigest(digest?: string): string {
+  if (!digest) return "unknown";
+  return digest.length > 22 ? `${digest.slice(0, 18)}...` : digest;
+}
+
+const TERMINAL_STATUSES = new Set(["succeeded", "failed", "rolled_back"]);
+const POLL_INTERVAL_MS = 2500;
+const MAX_POLL_ATTEMPTS = 260; // ~10.8 minutes, matching the ECS waitForStable budget (~600s)
+
+// "ecs_wait_stable" -> "Ecs wait stable"
+function formatPhase(phase: string): string {
+  return phase
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function formatTime(iso: string): string {
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? iso : parsed.toLocaleTimeString();
+}
+
+type StepIconState = "spinner" | "success" | "failure";
+
+function stepState(
+  event: DeploymentEvent,
+  index: number,
+  events: DeploymentEvent[],
+  deploymentStatus: string
+): StepIconState {
+  const isLast = index === events.length - 1;
+  const terminal = TERMINAL_STATUSES.has(deploymentStatus);
+  if (event.status === "failed") return "failure";
+  if (event.status === "succeeded" || event.status === "rolled_back") return "success";
+  // event.status is "running" or "pending":
+  if (isLast && !terminal) return "spinner";
+  return "success";
+}
+
+function renderStepIcon(state: StepIconState) {
+  if (state === "spinner") return <Loader2 size={14} className="step-icon spinner" />;
+  if (state === "failure") return <XCircle size={14} className="step-icon failure" />;
+  return <CheckCircle2 size={14} className="step-icon success" />;
+}
+
+function readMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+interface EventMetadataSummary {
+  summary?: string;
+  lastServiceEvent?: string;
+}
+
+function summarizeEventMetadata(event: DeploymentEvent): EventMetadataSummary {
+  const metadata = event.metadata;
+  const running = readMetadataNumber(metadata, "runningCount");
+  const desired = readMetadataNumber(metadata, "desiredCount");
+  const pending = readMetadataNumber(metadata, "pendingCount");
+  const rolloutState = readMetadataString(metadata, "rolloutState");
+  const lastServiceEvent = readMetadataString(metadata, "lastServiceEvent");
+
+  const parts: string[] = [];
+  if (running !== undefined || desired !== undefined) {
+    parts.push(`running ${running ?? "?"}/${desired ?? "?"}`);
+  }
+  if (pending !== undefined) {
+    parts.push(`pending ${pending}`);
+  }
+  if (rolloutState) {
+    parts.push(rolloutState);
+  }
+
+  return {
+    summary: parts.length > 0 ? parts.join(" · ") : undefined,
+    lastServiceEvent
+  };
+}
+
+// Polls GET /deployments/:id until the deployment reaches a terminal status (or the attempt
+// budget is exhausted), calling `onChanged` after every poll so the dashboard's deployment list
+// stays in sync. Shared by the deploy and rollback flows since both start with a 202 `running`
+// record and need to observe it settle.
+async function pollUntilTerminal(
+  token: string,
+  onChanged: () => Promise<void>,
+  started: Deployment
+): Promise<Deployment> {
+  let final = started;
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS && !TERMINAL_STATUSES.has(final.status); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    final = await api.deployment(token, started.deploymentId);
+    await onChanged();
+  }
+  return final;
+}
+
+function App() {
+  const [session, setSession] = useState<Session | undefined>(() => {
+    const raw = localStorage.getItem("heimdall-session");
+    return raw ? (JSON.parse(raw) as Session) : undefined;
+  });
+
+  if (!session) {
+    return <Login onLogin={setSession} />;
+  }
+
+  return <Portal session={session} onLogout={() => setSession(undefined)} />;
+}
+
+function Login({ onLogin }: { onLogin: (session: Session) => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const response = await api.login(email, password);
+      localStorage.setItem("heimdall-session", JSON.stringify(response));
+      onLogin(response);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <form className="login-panel" onSubmit={submit}>
+        <div>
+          <p className="eyebrow">Skillbrew</p>
+          <h1>Heimdall</h1>
+          <p className="muted">Controlled deployments for dev, stage, pre-prod, and prod.</p>
+        </div>
+        <label>
+          Email
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" />
+        </label>
+        <label>
+          Password
+          <input
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            type="password"
+          />
+        </label>
+        {error ? <p className="error">{error}</p> : null}
+        <button disabled={loading}>{loading ? "Signing in..." : "Sign in"}</button>
+      </form>
+    </main>
+  );
+}
+
+function Portal({ session, onLogout }: { session: Session; onLogout: () => void }) {
+  const [view, setView] = useState<View>("history");
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [services, setServices] = useState<DeploymentService[]>([]);
+  const [message, setMessage] = useState("");
+
+  const refresh = useCallback(async () => {
+    const [nextDeployments, nextServices] = await Promise.all([
+      api.deployments(session.token),
+      api.services(session.token)
+    ]);
+    setDeployments(nextDeployments);
+    setServices(nextServices);
+  }, [session.token]);
+
+  useEffect(() => {
+    refresh().catch((error: unknown) =>
+      setMessage(error instanceof Error ? error.message : "Failed to load dashboard")
+    );
+  }, [refresh]);
+
+  function logout() {
+    localStorage.removeItem("heimdall-session");
+    onLogout();
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <Activity size={22} />
+          <span>Heimdall</span>
+        </div>
+        <button className={view === "history" ? "active" : ""} onClick={() => setView("history")}>
+          <History size={18} /> Deployment History
+        </button>
+        <button className={view === "deploy" ? "active" : ""} onClick={() => setView("deploy")}>
+          <Rocket size={18} /> Deployment Center
+        </button>
+        {session.user.role === "admin" ? (
+          <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>
+            <Users size={18} /> Users
+          </button>
+        ) : null}
+        <div className="sidebar-footer">
+          <span>{session.user.email}</span>
+          <span className="badge">{session.user.role}</span>
+          <button onClick={logout}>Logout</button>
+        </div>
+      </aside>
+      <main className="content">
+        {message ? <div className="notice">{message}</div> : null}
+        {view === "history" ? (
+          <DeploymentHistory
+            deployments={deployments}
+            token={session.token}
+            user={session.user}
+            onChanged={refresh}
+          />
+        ) : null}
+        {view === "deploy" ? (
+          <DeploymentCenter
+            services={services}
+            token={session.token}
+            user={session.user}
+            onChanged={refresh}
+          />
+        ) : null}
+        {view === "admin" ? <AdminUsers token={session.token} /> : null}
+      </main>
+    </div>
+  );
+}
+
+function DeploymentHistory({
+  deployments,
+  token,
+  user,
+  onChanged
+}: {
+  deployments: Deployment[];
+  token: string;
+  user: User;
+  onChanged: () => Promise<void>;
+}) {
+  const [busyId, setBusyId] = useState("");
+  const [error, setError] = useState("");
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState("");
+
+  async function rollback(deployment: Deployment) {
+    if (!window.confirm(`Rollback ${deployment.serviceName} ${deployment.environment}?`)) {
+      return;
+    }
+    setBusyId(deployment.deploymentId);
+    setError("");
+    try {
+      const started = await api.rollback(token, deployment.deploymentId);
+      const final = await pollUntilTerminal(token, onChanged, started);
+
+      if (!TERMINAL_STATUSES.has(final.status)) {
+        setError("Rollback is still in progress. Check the history view for the latest status.");
+      } else if (final.status === "failed") {
+        setError(final.errorMessage ?? "Rollback failed");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Rollback failed");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  return (
+    <section>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Default view</p>
+          <h1>Deployment History</h1>
+        </div>
+      </header>
+      {error ? <p className="error">{error}</p> : null}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Service</th>
+              <th>Env</th>
+              <th>Release</th>
+              <th>Triggered By</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {deployments.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="empty">
+                  No deployments yet.
+                </td>
+              </tr>
+            ) : (
+              deployments.map((deployment) => (
+                <tr key={deployment.deploymentId}>
+                  <td>{new Date(deployment.startedAt).toLocaleString()}</td>
+                  <td>{deployment.serviceName}</td>
+                  <td>
+                    <span className={`env ${deployment.environment}`}>
+                      {deployment.environment}
+                    </span>
+                  </td>
+                  <td>
+                    <strong>{deployment.selectedImageTag}</strong>
+                    <small>{formatDigest(deployment.selectedImageDigest)}</small>
+                  </td>
+                  <td>{deployment.requestedByEmail}</td>
+                  <td>
+                    <span className={`status ${deployment.status}`}>{deployment.status}</span>
+                  </td>
+                  <td className="action-cell">
+                    <button
+                      className="secondary"
+                      disabled={
+                        !deployment.previousTaskDefinitionArn ||
+                        busyId === deployment.deploymentId ||
+                        !canDeploy(user.role, deployment.environment)
+                      }
+                      onClick={() => void rollback(deployment)}
+                    >
+                      {busyId === deployment.deploymentId ? "Rolling back..." : "Rollback"}
+                    </button>
+                    <button
+                      className="secondary"
+                      onClick={() => setSelectedDeploymentId(deployment.deploymentId)}
+                    >
+                      <ScrollText size={16} /> Logs
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      {selectedDeploymentId ? (
+        <DeploymentLogModal
+          token={token}
+          deploymentId={selectedDeploymentId}
+          onClose={() => setSelectedDeploymentId("")}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function DeploymentLogModal({
+  token,
+  deploymentId,
+  onClose
+}: {
+  token: string;
+  deploymentId: string;
+  onClose: () => void;
+}) {
+  const [deployment, setDeployment] = useState<Deployment | undefined>();
+  const [error, setError] = useState("");
+  const [polling, setPolling] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+
+    async function poll() {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const next = await api.deployment(token, deploymentId);
+        if (cancelled) return;
+        setDeployment(next);
+        setError("");
+        if (TERMINAL_STATUSES.has(next.status) || attempts >= MAX_POLL_ATTEMPTS) {
+          setPolling(false);
+          clearInterval(intervalId);
+        }
+      } catch (caught) {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Failed to load deployment log");
+        if (attempts >= MAX_POLL_ATTEMPTS) {
+          setPolling(false);
+          clearInterval(intervalId);
+        }
+      }
+    }
+
+    void poll();
+    const intervalId = setInterval(() => void poll(), POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [token, deploymentId]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(event) => event.stopPropagation()}>
+        <button className="modal-close" onClick={onClose} aria-label="Close">
+          <X size={18} />
+        </button>
+        {!deployment ? (
+          <p className="muted">Loading deployment...</p>
+        ) : (
+          <>
+            <header className="modal-header">
+              <div>
+                <h2>{deployment.serviceName}</h2>
+                <div className="modal-meta">
+                  <span className={`env ${deployment.environment}`}>{deployment.environment}</span>
+                  <span className={`status ${deployment.status}`}>{deployment.status}</span>
+                  {polling && !TERMINAL_STATUSES.has(deployment.status) ? (
+                    <span className="live-indicator">
+                      <span className="live-dot" /> live
+                    </span>
+                  ) : null}
+                </div>
+                <p className="modal-submeta">
+                  <strong>{deployment.selectedImageTag}</strong>{" "}
+                  <small>{formatDigest(deployment.selectedImageDigest)}</small>
+                </p>
+                <p className="modal-submeta muted">
+                  Requested by {deployment.requestedByEmail} · started{" "}
+                  {new Date(deployment.startedAt).toLocaleString()}
+                </p>
+              </div>
+            </header>
+            {error ? <p className="error">{error}</p> : null}
+            <div className="timeline-wrap">
+              {deployment.events.length === 0 ? (
+                <p className="muted">Waiting for the first event...</p>
+              ) : (
+                <ul className="timeline">
+                  {deployment.events.map((event, index) => {
+                    const { summary, lastServiceEvent } = summarizeEventMetadata(event);
+                    return (
+                      <li key={`${event.timestamp}-${index}`} className="timeline-item">
+                        <span className="timeline-indicator">
+                          {renderStepIcon(
+                            stepState(event, index, deployment.events, deployment.status)
+                          )}
+                        </span>
+                        <div className="timeline-body">
+                          <div className="timeline-row">
+                            <span className="timeline-phase">{formatPhase(event.phase)}</span>
+                            <span className="timeline-time">{formatTime(event.timestamp)}</span>
+                          </div>
+                          <p className="timeline-message">{event.message}</p>
+                          {summary ? <p className="timeline-sub muted">{summary}</p> : null}
+                          {lastServiceEvent ? (
+                            <p className="timeline-sub muted">{lastServiceEvent}</p>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            {deployment.status === "failed" && deployment.errorMessage ? (
+              <p className="error modal-error">{deployment.errorMessage}</p>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeploymentCenter({
+  services,
+  token,
+  user,
+  onChanged
+}: {
+  services: DeploymentService[];
+  token: string;
+  user: User;
+  onChanged: () => Promise<void>;
+}) {
+  const [serviceId, setServiceId] = useState(services[0]?.serviceId ?? "");
+  const [environment, setEnvironment] = useState<Environment>("dev");
+  const [openPrs, setOpenPrs] = useState<OpenPullRequest[]>([]);
+  const [selectedPrNumber, setSelectedPrNumber] = useState<number | undefined>();
+  const [current, setCurrent] = useState<CurrentServiceState | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const selectedPr = useMemo(
+    () => openPrs.find((pr) => pr.number === selectedPrNumber),
+    [openPrs, selectedPrNumber]
+  );
+
+  const environmentTag = useMemo(
+    () =>
+      services.find((service) => service.serviceId === serviceId)?.environments[environment]
+        ?.environmentTag,
+    [environment, serviceId, services]
+  );
+
+  useEffect(() => {
+    setServiceId(services[0]?.serviceId ?? "");
+  }, [services]);
+
+  useEffect(() => {
+    if (!serviceId) return;
+    let cancelled = false;
+    api
+      .openPullRequests(token, serviceId, environment)
+      .then((nextPrs) => {
+        if (cancelled) return;
+        const withImage = nextPrs.filter((pr) => pr.release);
+        setOpenPrs(withImage);
+        setSelectedPrNumber(withImage[0]?.number);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Load failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceId, token, environment]);
+
+  useEffect(() => {
+    if (!serviceId) return;
+    let cancelled = false;
+    api
+      .current(token, serviceId, environment)
+      .then((nextCurrent) => {
+        if (cancelled) return;
+        setCurrent(nextCurrent);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Load failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceId, environment, token]);
+
+  const deployBlocked = !canDeploy(user.role, environment);
+
+  async function deploy() {
+    if (!selectedPr?.release) return;
+    if (
+      !window.confirm(
+        `Deploy PR #${selectedPr.number} (${selectedPr.imageTag}) to ${environment}? This will move :${environmentTag ?? "unknown"} and force ECS deployment.`
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const started = await api.deploy(token, {
+        serviceId,
+        environment,
+        imageTag: selectedPr.imageTag,
+        imageDigest: selectedPr.release.digest
+      });
+
+      const final = await pollUntilTerminal(token, onChanged, started);
+
+      if (!TERMINAL_STATUSES.has(final.status)) {
+        setError("Deployment is still in progress. Check the history view for the latest status.");
+      } else if (final.status === "failed") {
+        setError(final.errorMessage ?? "Deployment failed");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Deployment failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section>
+
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Deploy</p>
+          <h1>Deployment Center</h1>
+          <p className="muted">
+            Select an environment, then pick an open pull request and deploy it.
+          </p>
+        </div>
+      </header>
+      <div className="deploy-grid">
+        <label>
+          Microservice
+          <select value={serviceId} onChange={(event) => setServiceId(event.target.value)}>
+            {services.map((service) => (
+              <option key={service.serviceId} value={service.serviceId}>
+                {service.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Environment
+          <select value={environment} onChange={(event) => setEnvironment(event.target.value as Environment)}>
+            {environments.map((env) => (
+              <option key={env} value={env}>
+                {env}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Open pull request
+          <select
+            value={selectedPrNumber ?? ""}
+            onChange={(event) => setSelectedPrNumber(Number(event.target.value))}
+          >
+            {openPrs.map((pr) => (
+              <option key={pr.number} value={pr.number}>
+                #{pr.number} {pr.title} · :{pr.imageTag}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {openPrs.length === 0 ? (
+        <p className="muted">No open pull requests for this microservice.</p>
+      ) : null}
+      {selectedPr ? (
+        <div className="summary">
+          <div>
+            <span>Branch</span>
+            <strong>{selectedPr.headBranch ?? "none"}</strong>
+            <small>base {selectedPr.baseBranch ?? "unknown"}</small>
+          </div>
+          <div>
+            <span>Image tag</span>
+            <strong>:{selectedPr.imageTag ?? "unknown"}</strong>
+            <small>{formatDigest(selectedPr.release?.digest)}</small>
+          </div>
+          <div>
+            <span>Updated</span>
+            <strong>{selectedPr ? new Date(selectedPr.updatedAt).toLocaleString() : "unknown"}</strong>
+          </div>
+        </div>
+      ) : null}
+      {current ? (
+        <div className="summary">
+          <div>
+            <span>Current</span>
+            <strong>{formatDigest(current.environmentImageDigest ?? "")}</strong>
+            <small>{current.status ?? "unknown"}</small>
+          </div>
+        </div>
+      ) : null}
+      {deployBlocked ? (
+        <p className="warning">
+          <Shield size={16} /> {environment} deployments are admin-only.
+        </p>
+      ) : null}
+      {error ? <p className="error">{error}</p> : null}
+      <button
+        disabled={!selectedPr?.release || loading || deployBlocked}
+        onClick={() => void deploy()}
+      >
+        {loading ? "Deploying..." : `Deploy to ${environment}`}
+      </button>
+    </section>
+  );
+}
+
+function AdminUsers({ token }: { token: string }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<"admin" | "user">("user");
+  const [message, setMessage] = useState("");
+
+  async function create(event: React.FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    try {
+      const user = await api.createUser(token, { email, name, password, role });
+      setMessage(`Created ${user.email}`);
+      setEmail("");
+      setName("");
+      setPassword("");
+      setRole("user");
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "Failed to create user");
+    }
+  }
+
+  return (
+    <section>
+      <header className="page-header">
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1>User Management</h1>
+        </div>
+      </header>
+      <form className="admin-form" onSubmit={create}>
+        <label>
+          Name
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <label>
+          Email
+          <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" />
+        </label>
+        <label>
+          Temporary password
+          <input
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            type="password"
+          />
+        </label>
+        <label>
+          Role
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as "admin" | "user")}
+          >
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+        </label>
+        <button>Create user</button>
+        {message ? <p className="notice">{message}</p> : null}
+      </form>
+    </section>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

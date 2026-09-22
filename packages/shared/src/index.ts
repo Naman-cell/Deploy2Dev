@@ -1,0 +1,263 @@
+import { z } from "zod";
+
+export const environments = ["dev", "stage", "preprod", "prod"] as const;
+export const roles = ["admin", "user"] as const;
+export const deploymentStatuses = [
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "rolled_back"
+] as const;
+
+export const EnvironmentSchema = z.enum(environments);
+export const RoleSchema = z.enum(roles);
+export const DeploymentStatusSchema = z.enum(deploymentStatuses);
+
+export type Environment = z.infer<typeof EnvironmentSchema>;
+export type Role = z.infer<typeof RoleSchema>;
+export type DeploymentStatus = z.infer<typeof DeploymentStatusSchema>;
+
+export const UserSchema = z.object({
+  userId: z.string(),
+  email: z.string().email(),
+  name: z.string(),
+  role: RoleSchema,
+  status: z.enum(["active", "disabled"]),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export type User = z.infer<typeof UserSchema>;
+
+export const EnvironmentTagSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9._-]*$/);
+
+export const ServiceEnvironmentSchema = z.object({
+  clusterName: z.string(),
+  serviceName: z.string(),
+  taskFamily: z.string(),
+  environmentTag: EnvironmentTagSchema
+});
+
+export const ServiceSchema = z.object({
+  serviceId: z.string(),
+  name: z.string(),
+  githubRepository: z.string(),
+  ecrRepository: z.string(),
+  ecrRepositoryUri: z.string().optional(),
+  containerName: z.string(),
+  environments: z.record(EnvironmentSchema, ServiceEnvironmentSchema),
+  allowedDeployRolesByEnvironment: z.record(EnvironmentSchema, z.array(RoleSchema))
+});
+
+export type DeploymentService = z.infer<typeof ServiceSchema>;
+
+export const ReleaseSchema = z.object({
+  tag: z.string(),
+  digest: z.string(),
+  pushedAt: z.string().optional(),
+  source: z.enum(["manual", "dev", "stage", "preprod", "prod", "hotfix", "unknown"]),
+  isEnvironmentPointer: z.boolean(),
+  sourceBranch: z.string().optional()
+});
+
+export type Release = z.infer<typeof ReleaseSchema>;
+
+export interface OpenPullRequest {
+  number: number;
+  title: string;
+  headBranch: string;
+  baseBranch: string;
+  headSha: string;
+  updatedAt: string;
+  /** Sanitized branch name — the exact ECR tag CI pushes (branch-name-only). */
+  imageTag: string;
+  /** Matching ECR release, when the branch image has been pushed. */
+  release?: Release;
+}
+
+export const DeploymentEventSchema = z.object({
+  deploymentId: z.string(),
+  timestamp: z.string(),
+  phase: z.string(),
+  status: DeploymentStatusSchema,
+  message: z.string(),
+  metadata: z.record(z.unknown()).optional()
+});
+
+export type DeploymentEvent = z.infer<typeof DeploymentEventSchema>;
+
+export const DeploymentSchema = z.object({
+  deploymentId: z.string(),
+  serviceId: z.string(),
+  serviceName: z.string(),
+  environment: EnvironmentSchema,
+  requestedBy: z.string(),
+  requestedByEmail: z.string(),
+  selectedImageTag: z.string(),
+  selectedImageDigest: z.string(),
+  previousEnvironmentImageDigest: z.string().optional(),
+  previousTaskDefinitionArn: z.string().optional(),
+  newTaskDefinitionArn: z.string().optional(),
+  status: DeploymentStatusSchema,
+  startedAt: z.string(),
+  completedAt: z.string().optional(),
+  errorMessage: z.string().optional(),
+  correlationId: z.string(),
+  events: z.array(DeploymentEventSchema)
+});
+
+export type Deployment = z.infer<typeof DeploymentSchema>;
+
+export const LoginRequestSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8)
+});
+
+export type LoginRequest = z.infer<typeof LoginRequestSchema>;
+
+export const CreateDeploymentRequestSchema = z.object({
+  serviceId: z.string(),
+  environment: EnvironmentSchema,
+  imageTag: z.string().min(1),
+  imageDigest: z.string().min(1)
+});
+
+export type CreateDeploymentRequest = z.infer<typeof CreateDeploymentRequestSchema>;
+
+export const CreateUserRequestSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1),
+  password: z.string().min(12),
+  role: RoleSchema
+});
+
+export type CreateUserRequest = z.infer<typeof CreateUserRequestSchema>;
+
+export interface CurrentServiceState {
+  serviceId: string;
+  environment: Environment;
+  clusterName: string;
+  serviceName: string;
+  currentTaskDefinitionArn?: string;
+  environmentImageDigest?: string;
+  runningCount?: number;
+  desiredCount?: number;
+  status?: string;
+}
+
+export function canDeploy(role: Role, environment: Environment): boolean {
+  if (environment === "prod" || environment === "preprod") {
+    return role === "admin";
+  }
+
+  return role === "admin" || role === "user";
+}
+
+export function classifyReleaseTag(tag: string): Release["source"] {
+  if (tag === "dev" || tag === "stage" || tag === "prod") {
+    return tag;
+  }
+  if (tag === "stg" || tag === "staging") {
+    return "stage";
+  }
+  if (tag === "preprod" || tag === "pre-prod") {
+    return "preprod";
+  }
+  if (tag.startsWith("hotfix-")) {
+    return "hotfix";
+  }
+  if (tag.startsWith("dev-")) {
+    return "dev";
+  }
+  if (tag.startsWith("stage-") || tag.startsWith("stg-") || tag.startsWith("staging-")) {
+    return "stage";
+  }
+  if (tag.startsWith("preprod-") || tag.startsWith("pre-prod-")) {
+    return "preprod";
+  }
+  if (tag.startsWith("prod-")) {
+    return "prod";
+  }
+  if (tag.startsWith("sha-")) {
+    return "manual";
+  }
+  // Anything else is a branch-name tag: under CI's tagging convention, an image is either tagged
+  // with a recognized structured promotion tag (matched above) or with the sanitized branch name
+  // itself (e.g. `feature-login`, `main`, or — since sanitizeBranchName below always appends a
+  // trailing dash — `feature-login-`, `main-`). Both cases are "manual" (deployable to dev/stage,
+  // gated for preprod/prod via isBaseBranchEligibleForEnvironment).
+  return "manual";
+}
+
+/** Sanitizes a git branch name exactly like CI does: `echo "$BRANCH" | tr -c 'a-zA-Z0-9.-' '-' |
+ * tr '[:upper:]' '[:lower:]'`. `echo` appends a trailing newline; `tr -c` replaces every
+ * character NOT in the allowed set — including that trailing newline — with `-`; command
+ * substitution (`$(...)`) only strips trailing *newlines*, not dashes. Net effect: every real
+ * CI-pushed tag ends with a literal trailing `-`. Do not "fix" this away — it must match CI
+ * exactly. Must stay in sync with the `Compute tag, platform` step in build-push.yml. */
+export function sanitizeBranchName(branch: string): string {
+  return `${branch.replace(/[^A-Za-z0-9.-]/g, "-").toLowerCase()}-`;
+}
+
+/** preprod/prod are release-gated; dev/stage are unrestricted. */
+export function requiresReleaseBranch(environment: Environment): boolean {
+  return environment === "preprod" || environment === "prod";
+}
+
+/** Maps each environment to the set of git base-branch names that PRs targeting it should match.
+ * A PR is listable for an environment when its `base_branch` appears in this set. This mirrors
+ * CI's branch-protection model: dev/stage accept PRs from any branch, while preprod/prod only
+ * accept PRs that target `main` or `release/*`. */
+export function baseBranchesForEnvironment(environment: Environment): string[] {
+  switch (environment) {
+    case "dev":
+      return ["dev"];
+    case "stage":
+      return ["staging", "stage"];
+    case "preprod":
+      return ["preprod", "main", "release"];
+    case "prod":
+      return ["main", "release", "prod"];
+    default: {
+      const _exhaustive: never = environment;
+      void _exhaustive;
+      return [];
+    }
+  }
+}
+
+/** True when a PR's base branch is eligible to be listed for the given environment.
+ * For dev/stage this is an exact match against the environment's branch set; for preprod/prod
+ * it also accepts any branch starting with `release/`. */
+export function isBaseBranchEligibleForEnvironment(
+  environment: Environment,
+  baseBranch: string | undefined
+): boolean {
+  if (!baseBranch) {
+    return false;
+  }
+  const normalized = baseBranch.endsWith("-") ? baseBranch.slice(0, -1) : baseBranch;
+  const eligible = baseBranchesForEnvironment(environment);
+  return (
+    eligible.includes(normalized) ||
+    eligible.includes(baseBranch) ||
+    (requiresReleaseBranch(environment) &&
+      (normalized.startsWith("release/") || normalized.startsWith("release-")))
+  );
+}
+
+export function environmentPointerTags(service: DeploymentService): Set<string> {
+  const tags = new Set<string>();
+  for (const environment of environments) {
+    const config = service.environments[environment];
+    if (config) {
+      tags.add(config.environmentTag);
+    }
+  }
+  return tags;
+}
