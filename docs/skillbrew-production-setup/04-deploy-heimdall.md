@@ -28,7 +28,7 @@ production changes **before** deploying. Consider copying it to
    - **Do not** hard-code `AWS_REGION` — the Lambda runtime injects it; deploying the stack in
      `ap-south-1` is what sets the region.
 4. **Keep the async-deploy settings** (already in the template from prior work):
-   - Lambda `Timeout: 360`
+   - Lambda `Timeout: 900`
    - `AWS::Lambda::EventInvokeConfig` with `MaximumRetryAttempts: 0`
    - the self-invoke `lambda:InvokeFunction` permission + `AWS::Lambda::Permission`
 5. **Secrets:** prefer sourcing `JwtSecret`/`SeedAdminPassword` from Secrets Manager/SSM at
