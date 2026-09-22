@@ -78,11 +78,13 @@ Set these GitHub repo **variables**: `AWS_ROLE_ARN`, `AWS_REGION=ap-south-1`,
 Key requirements for the workflow, so Heimdall can promote what it builds:
 
 - `permissions: id-token: write` (for OIDC) + `contents: read`.
-- Assume the role via `aws-actions/configure-aws-credentials@v4`.
+- Assume the role via `aws-actions/configure-aws-credentials@v6.3.0`.
 - Push an **immutable** tag Heimdall can select — recommended `sha-<short-sha>` (and optionally
   `branch-<branch>-<sha>`).
 - **Do not push the environment pointer tags** (`dev`, `stg`, `preprod`, `prod`). Those are
   Heimdall-owned; CI pushing them would fight Heimdall's promotion and corrupt the audit trail.
+- The workflow also confirms the ECR repo exists, runs an advisory (non-blocking) Trivy scan, and
+  writes a build summary — none of this affects what Heimdall reads.
 
 ---
 
