@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DeploymentService } from "./index";
 import {
-  branchFromImageTags,
   canDeploy,
   classifyReleaseTag,
   environmentPointerTags,
-  isReleaseBranch,
-  isReleaseEligibleForEnvironment
+  sanitizeBranchName
 } from "./index";
 
 describe("shared deployment policy helpers", () => {
@@ -26,8 +24,15 @@ describe("shared deployment policy helpers", () => {
     expect(canDeploy("admin", "stage")).toBe(true);
   });
 
+  it("classifies branch-name tags as manual (deployable to dev/stage, gated for preprod/prod)", () => {
+    expect(classifyReleaseTag("feature-login")).toBe("manual");
+    expect(classifyReleaseTag("feature-proj-123-badge")).toBe("manual");
+    expect(classifyReleaseTag("main")).toBe("manual");
+    expect(classifyReleaseTag("chore-deps-bump")).toBe("manual");
+  });
+
   it("classifies Skillbrew release tags", () => {
-    expect(classifyReleaseTag("branch-feature-auth-a1b2c3d")).toBe("manual");
+    expect(classifyReleaseTag("sha-a1b2c3d")).toBe("manual");
     expect(classifyReleaseTag("dev-20260603-42-a1b2c3d")).toBe("dev");
     expect(classifyReleaseTag("stage-20260603-18-d4e5f6a")).toBe("stage");
     expect(classifyReleaseTag("hotfix-20260603-7-ab12cd3")).toBe("hotfix");
@@ -115,83 +120,22 @@ describe("shared deployment policy helpers", () => {
   });
 });
 
-describe("branchFromImageTags", () => {
-  it("parses the single-dash form", () => {
-    expect(branchFromImageTags(["branch-feature-login-a1b2c3d"])).toBe("feature-login");
+describe("sanitizeBranchName", () => {
+  it("lowercases mixed-case branch names", () => {
+    expect(sanitizeBranchName("Feature-Login")).toBe("feature-login-");
   });
 
-  it("parses the double-dash form CI actually produces", () => {
-    expect(branchFromImageTags(["branch-main--fa867dc"])).toBe("main");
+  it("replaces slashes with dashes, matching CI's tr -c filter", () => {
+    expect(sanitizeBranchName("feature/PROJ-123-Foo")).toBe("feature-proj-123-foo-");
   });
 
-  it("parses a sanitized release/v1.2.0 branch", () => {
-    expect(branchFromImageTags(["branch-release-v1.2.0-abc1234"])).toBe("release-v1.2.0");
+  it("passes already-clean names through unchanged, just lowercased, with a trailing dash", () => {
+    expect(sanitizeBranchName("main")).toBe("main-");
+    expect(sanitizeBranchName("release-v1.2.0")).toBe("release-v1.2.0-");
   });
 
-  it("returns undefined when only a sha-<shortsha> tag is present", () => {
-    expect(branchFromImageTags(["sha-a1b2c3d"])).toBeUndefined();
-  });
-
-  it("returns undefined for an empty tag list", () => {
-    expect(branchFromImageTags([])).toBeUndefined();
-  });
-
-  it("does not swallow a hex-looking suffix of the branch name as the sha", () => {
-    expect(branchFromImageTags(["branch-feature-abcdef1-1234567"])).toBe("feature-abcdef1");
-  });
-
-  it("finds the branch tag among other sibling tags on the same digest", () => {
-    expect(branchFromImageTags(["sha-a1b2c3d", "branch-main--a1b2c3d", "latest"])).toBe("main");
-  });
-});
-
-describe("isReleaseBranch", () => {
-  it("treats main as a release branch", () => {
-    expect(isReleaseBranch("main")).toBe(true);
-  });
-
-  it("treats sanitized release-* as a release branch", () => {
-    expect(isReleaseBranch("release-v1.2.0")).toBe(true);
-  });
-
-  it("treats unsanitized release/* as a release branch", () => {
-    expect(isReleaseBranch("release/v1.2.0")).toBe(true);
-  });
-
-  it("does not treat a feature branch as a release branch", () => {
-    expect(isReleaseBranch("feature-login")).toBe(false);
-  });
-
-  it("does not treat an undefined branch as a release branch", () => {
-    expect(isReleaseBranch(undefined)).toBe(false);
-  });
-});
-
-describe("isReleaseEligibleForEnvironment", () => {
-  it("always allows dev and stage, even for a feature branch", () => {
-    expect(isReleaseEligibleForEnvironment("dev", { sourceBranch: "feature-login" })).toBe(true);
-    expect(isReleaseEligibleForEnvironment("stage", { sourceBranch: "feature-login" })).toBe(true);
-  });
-
-  it("always allows dev and stage, even with no derivable branch", () => {
-    expect(isReleaseEligibleForEnvironment("dev", { sourceBranch: undefined })).toBe(true);
-    expect(isReleaseEligibleForEnvironment("stage", { sourceBranch: undefined })).toBe(true);
-  });
-
-  it("allows preprod and prod only for main/release-* branches", () => {
-    expect(isReleaseEligibleForEnvironment("preprod", { sourceBranch: "main" })).toBe(true);
-    expect(isReleaseEligibleForEnvironment("prod", { sourceBranch: "main" })).toBe(true);
-    expect(isReleaseEligibleForEnvironment("preprod", { sourceBranch: "release-v1.2.0" })).toBe(true);
-    expect(isReleaseEligibleForEnvironment("prod", { sourceBranch: "release-v1.2.0" })).toBe(true);
-  });
-
-  it("rejects preprod and prod for a feature branch", () => {
-    expect(isReleaseEligibleForEnvironment("preprod", { sourceBranch: "feature-login" })).toBe(false);
-    expect(isReleaseEligibleForEnvironment("prod", { sourceBranch: "feature-login" })).toBe(false);
-  });
-
-  it("rejects preprod and prod when no branch is derivable", () => {
-    expect(isReleaseEligibleForEnvironment("preprod", { sourceBranch: undefined })).toBe(false);
-    expect(isReleaseEligibleForEnvironment("prod", { sourceBranch: undefined })).toBe(false);
+  it("replaces leading and trailing special characters with dashes, plus CI's trailing dash", () => {
+    expect(sanitizeBranchName("/feature/login/")).toBe("-feature-login--");
+    expect(sanitizeBranchName("#hotfix!")).toBe("-hotfix--");
   });
 });

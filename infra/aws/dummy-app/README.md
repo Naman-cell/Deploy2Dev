@@ -74,8 +74,9 @@ OIDC (`id-token: write` + `aws-actions/configure-aws-credentials`).
 ### 4. Push and deploy
 
 Push a commit. CI runs `checks` (hadolint + a sanity check), then
-`build-and-push`, which builds the image, stamps the commit SHA and build
-date into the page, and pushes:
+`build-and-push`, which stamps the commit SHA and build date into the page,
+runs an advisory Trivy scan (vulnerabilities/secrets/misconfig, non-blocking),
+builds the image via Docker Buildx, and pushes:
 
 - `${ECR_REPOSITORY_URI}:sha-<short-sha>` (immutable, use this one)
 - `${ECR_REPOSITORY_URI}:branch-<sanitized-branch>-<short-sha>`

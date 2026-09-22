@@ -23,10 +23,6 @@ Parameters:
     NoEcho: true
     MinLength: 12
     Description: Initial admin password for first-time bootstrap. Rotate after setup.
-  EcrRepositoryUri:
-    Type: String
-    Default: ""
-    Description: Full ECR repository URI for the sample service. Defaults to this account and region.
   GithubToken:
     Type: String
     NoEcho: true
@@ -34,9 +30,6 @@ Parameters:
     Description: >-
       GitHub API token for listing open PRs. Optional — leave blank for public repos (subject to
       GitHub's lower unauthenticated rate limit); required for private repos.
-
-Conditions:
-  HasCustomEcrRepositoryUri: !Not [!Equals [!Ref EcrRepositoryUri, ""]]
 
 Resources:
   UsersTable:
@@ -134,14 +127,39 @@ Resources:
                   - ecr:DescribeImages
                   - ecr:BatchGetImage
                   - ecr:PutImage
+                Resource:
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-be
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew_ai
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/resume-analyzer
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skb-payments
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/notification-api
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/notification-worker
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-agent
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-agent-daemon
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-reward
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-fe
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-app-fe
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-org-fe
+                  - arn:aws:ecr:ap-south-1:741005527903:repository/skillbrew-fe-admin
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeTaskDefinition
+                  - ecs:RegisterTaskDefinition
                 Resource: "*"
               - Effect: Allow
                 Action:
                   - ecs:DescribeServices
-                  - ecs:DescribeTaskDefinition
-                  - ecs:RegisterTaskDefinition
                   - ecs:UpdateService
                 Resource: "*"
+                Condition:
+                  ArnEquals:
+                    ecs:cluster:
+                      - arn:aws:ecs:ap-south-1:741005527903:cluster/skillbrew-dev-cluster
+                      - arn:aws:ecs:ap-south-1:741005527903:cluster/skillbrew-staging-cluster
+                      - arn:aws:ecs:ap-south-1:741005527903:cluster/skillbrew-prod-cluster
+              # TODO(doc 02): tighten to explicit task/execution role ARNs (e.g.
+              # arn:aws:iam::741005527903:role/skillbrew-*-task-role /
+              # skillbrew-*-execution-role) once those ARNs are supplied — not available yet.
               - Effect: Allow
                 Action:
                   - iam:PassRole
@@ -181,14 +199,9 @@ Resources:
           DATA_STORE: dynamodb
           AWS_INTEGRATION: aws
           STATIC_ASSETS_DIR: public
-          SERVICE_CATALOG: sandbox
           JWT_SECRET: !Ref JwtSecret
           SEED_ADMIN_EMAIL: !Ref SeedAdminEmail
           SEED_ADMIN_PASSWORD: !Ref SeedAdminPassword
-          ECR_REPOSITORY_URI: !If
-            - HasCustomEcrRepositoryUri
-            - !Ref EcrRepositoryUri
-            - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/deploy2dev/sample-service"
           USERS_TABLE_NAME: !Ref UsersTable
           DEPLOYMENTS_TABLE_NAME: !Ref DeploymentsTable
           DEPLOYMENT_EVENTS_TABLE_NAME: !Ref DeploymentEventsTable

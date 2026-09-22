@@ -306,7 +306,7 @@ describe("AwsRegistryAdapter", () => {
       ).rejects.toThrow("not authorized");
     });
 
-    it("derives sourceBranch from a sibling branch-<branch>--<sha> tag on the same digest", async () => {
+    it("derives sourceBranch from the release's own tag (tag IS the branch name)", async () => {
       const { config, service } = getSkillBrewService("django_app");
       const adapter = new AwsRegistryAdapter(config, logger);
 
@@ -316,7 +316,7 @@ describe("AwsRegistryAdapter", () => {
             imageDetails: [
               {
                 imageDigest: "sha256:current",
-                imageTags: ["dev-20260603-1-abc1234", "branch-main--abc1234"]
+                imageTags: ["dev-20260603-1-abc1234", "main"]
               }
             ]
           };
@@ -325,11 +325,11 @@ describe("AwsRegistryAdapter", () => {
       });
 
       await expect(
-        adapter.findRelease(service, "dev-20260603-1-abc1234", "sha256:current")
+        adapter.findRelease(service, "main", "sha256:current")
       ).resolves.toMatchObject({ sourceBranch: "main" });
     });
 
-    it("leaves sourceBranch undefined when no sibling tag matches the branch convention", async () => {
+    it("sets sourceBranch to the tag even for non-branch tags", async () => {
       const { config, service } = getSkillBrewService("django_app");
       const adapter = new AwsRegistryAdapter(config, logger);
 
@@ -346,7 +346,7 @@ describe("AwsRegistryAdapter", () => {
 
       await expect(
         adapter.findRelease(service, "dev-20260603-1-abc1234", "sha256:current")
-      ).resolves.toMatchObject({ sourceBranch: undefined });
+      ).resolves.toMatchObject({ sourceBranch: "dev-20260603-1-abc1234" });
     });
   });
 
@@ -404,7 +404,7 @@ describe("AwsRegistryAdapter", () => {
       expect(capturedTokens).toEqual([undefined, "page-2"]);
     });
 
-    it("populates sourceBranch on every per-tag Release pushed for a digest, derived from that digest's full tag set", async () => {
+    it("populates sourceBranch as the tag itself for every per-tag Release", async () => {
       const { config, service } = getSkillBrewService("django_app");
       const adapter = new AwsRegistryAdapter(config, logger);
 
@@ -415,13 +415,13 @@ describe("AwsRegistryAdapter", () => {
         return {
           imageDetails: [
             {
-              imageDigest: "sha256:release-branch",
-              // Double-dash form CI actually produces, alongside a plain sha- tag on the same digest.
-              imageTags: ["sha-fa867dc", "branch-main--fa867dc"],
+              imageDigest: "sha256:feature",
+              // Branch-name tags: the tag IS the source branch.
+              imageTags: ["feature-login", "sha-fa867dc"],
               imagePushedAt: new Date("2026-03-01T00:00:00.000Z")
             },
             {
-              imageDigest: "sha256:no-branch",
+              imageDigest: "sha256:dev",
               imageTags: ["dev-20260301-1-fa867de"],
               imagePushedAt: new Date("2026-02-01T00:00:00.000Z")
             }
@@ -431,12 +431,14 @@ describe("AwsRegistryAdapter", () => {
 
       const releases = await adapter.listReleases(service);
 
-      const releaseBranchTags = releases.filter((release) => release.digest === "sha256:release-branch");
-      expect(releaseBranchTags).toHaveLength(2);
-      expect(releaseBranchTags.every((release) => release.sourceBranch === "main")).toBe(true);
+      const featureBranchTags = releases.filter((release) => release.digest === "sha256:feature");
+      expect(featureBranchTags).toHaveLength(2);
+      // Each tag's sourceBranch equals the tag itself.
+      expect(featureBranchTags.find((r) => r.tag === "feature-login")?.sourceBranch).toBe("feature-login");
+      expect(featureBranchTags.find((r) => r.tag === "sha-fa867dc")?.sourceBranch).toBe("sha-fa867dc");
 
-      const noBranchRelease = releases.find((release) => release.digest === "sha256:no-branch");
-      expect(noBranchRelease?.sourceBranch).toBeUndefined();
+      const devRelease = releases.find((release) => release.digest === "sha256:dev");
+      expect(devRelease?.sourceBranch).toBe("dev-20260301-1-fa867de");
     });
 
     it("terminates when ECR returns the same nextToken repeatedly", async () => {

@@ -12,16 +12,8 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import type {
-  CurrentServiceState,
-  Deployment,
-  DeploymentEvent,
-  DeploymentService,
-  Environment,
-  Release,
-  User
-} from "@heimdall/shared";
-import { canDeploy, environments, isReleaseEligibleForEnvironment } from "@heimdall/shared";
+import type { CurrentServiceState, Deployment, DeploymentEvent, DeploymentService, Environment, OpenPullRequest, User } from "@heimdall/shared";
+import { canDeploy, environments } from "@heimdall/shared";
 import { api, ApiError } from "./api";
 import "./styles.css";
 
@@ -526,15 +518,15 @@ function DeploymentCenter({
 }) {
   const [serviceId, setServiceId] = useState(services[0]?.serviceId ?? "");
   const [environment, setEnvironment] = useState<Environment>("dev");
-  const [releases, setReleases] = useState<Release[]>([]);
-  const [releaseDigest, setReleaseDigest] = useState("");
+  const [openPrs, setOpenPrs] = useState<OpenPullRequest[]>([]);
+  const [selectedPrNumber, setSelectedPrNumber] = useState<number | undefined>();
   const [current, setCurrent] = useState<CurrentServiceState | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const selectedRelease = useMemo(
-    () => releases.find((release) => release.digest === releaseDigest),
-    [releaseDigest, releases]
+  const selectedPr = useMemo(
+    () => openPrs.find((pr) => pr.number === selectedPrNumber),
+    [openPrs, selectedPrNumber]
   );
 
   const environmentTag = useMemo(
@@ -550,34 +542,49 @@ function DeploymentCenter({
 
   useEffect(() => {
     if (!serviceId) return;
-    Promise.all([
-      api.releases(token, serviceId, environment),
-      api.current(token, serviceId, environment)
-    ])
-      .then(([nextReleases, nextCurrent]) => {
-        setReleases(nextReleases);
-        setCurrent(nextCurrent);
-        const eligibleDefault = nextReleases.find(
-          (release) =>
-            !release.isEnvironmentPointer && isReleaseEligibleForEnvironment(environment, release)
-        );
-        const fallbackDefault = nextReleases.find((release) => !release.isEnvironmentPointer);
-        setReleaseDigest((eligibleDefault ?? fallbackDefault)?.digest ?? "");
+    let cancelled = false;
+    api
+      .openPullRequests(token, serviceId, environment)
+      .then((nextPrs) => {
+        if (cancelled) return;
+        const withImage = nextPrs.filter((pr) => pr.release);
+        setOpenPrs(withImage);
+        setSelectedPrNumber(withImage[0]?.number);
       })
-      .catch((caught: unknown) =>
-        setError(caught instanceof Error ? caught.message : "Load failed")
-      );
-  }, [environment, serviceId, token]);
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Load failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceId, token, environment]);
+
+  useEffect(() => {
+    if (!serviceId) return;
+    let cancelled = false;
+    api
+      .current(token, serviceId, environment)
+      .then((nextCurrent) => {
+        if (cancelled) return;
+        setCurrent(nextCurrent);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setError(caught instanceof Error ? caught.message : "Load failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceId, environment, token]);
 
   const deployBlocked = !canDeploy(user.role, environment);
-  const releaseIneligible =
-    !!selectedRelease && !isReleaseEligibleForEnvironment(environment, selectedRelease);
 
   async function deploy() {
-    if (!selectedRelease) return;
+    if (!selectedPr?.release) return;
     if (
       !window.confirm(
-        `Deploy ${selectedRelease.tag} to ${environment}? This will move :${environmentTag ?? "unknown"} and force ECS deployment.`
+        `Deploy PR #${selectedPr.number} (${selectedPr.imageTag}) to ${environment}? This will move :${environmentTag ?? "unknown"} and force ECS deployment.`
       )
     ) {
       return;
@@ -588,8 +595,8 @@ function DeploymentCenter({
       const started = await api.deploy(token, {
         serviceId,
         environment,
-        imageTag: selectedRelease.tag,
-        imageDigest: selectedRelease.digest
+        imageTag: selectedPr.imageTag,
+        imageDigest: selectedPr.release.digest
       });
 
       const final = await pollUntilTerminal(token, onChanged, started);
@@ -608,10 +615,14 @@ function DeploymentCenter({
 
   return (
     <section>
+
       <header className="page-header">
         <div>
-          <p className="eyebrow">Promote release</p>
+          <p className="eyebrow">Deploy</p>
           <h1>Deployment Center</h1>
+          <p className="muted">
+            Select an environment, then pick an open pull request and deploy it.
+          </p>
         </div>
       </header>
       <div className="deploy-grid">
@@ -627,10 +638,7 @@ function DeploymentCenter({
         </label>
         <label>
           Environment
-          <select
-            value={environment}
-            onChange={(event) => setEnvironment(event.target.value as Environment)}
-          >
+          <select value={environment} onChange={(event) => setEnvironment(event.target.value as Environment)}>
             {environments.map((env) => (
               <option key={env} value={env}>
                 {env}
@@ -639,56 +647,57 @@ function DeploymentCenter({
           </select>
         </label>
         <label>
-          Release
-          <select value={releaseDigest} onChange={(event) => setReleaseDigest(event.target.value)}>
-            {releases.map((release) => {
-              const eligible = isReleaseEligibleForEnvironment(environment, release);
-              return (
-                <option
-                  key={`${release.tag}-${release.digest}`}
-                  value={release.digest}
-                  disabled={!eligible}
-                >
-                  {release.tag} · {release.sourceBranch ?? "no branch"}
-                  {release.isEnvironmentPointer ? " (env pointer)" : ""}
-                  {eligible ? "" : " — release branch only"}
-                </option>
-              );
-            })}
+          Open pull request
+          <select
+            value={selectedPrNumber ?? ""}
+            onChange={(event) => setSelectedPrNumber(Number(event.target.value))}
+          >
+            {openPrs.map((pr) => (
+              <option key={pr.number} value={pr.number}>
+                #{pr.number} {pr.title} · :{pr.imageTag}
+              </option>
+            ))}
           </select>
         </label>
       </div>
-      <div className="summary">
-        <div>
-          <span>Current :{environmentTag ?? "unknown"}</span>
-          <strong>{formatDigest(current?.environmentImageDigest)}</strong>
+      {openPrs.length === 0 ? (
+        <p className="muted">No open pull requests for this microservice.</p>
+      ) : null}
+      {selectedPr ? (
+        <div className="summary">
+          <div>
+            <span>Branch</span>
+            <strong>{selectedPr.headBranch ?? "none"}</strong>
+            <small>base {selectedPr.baseBranch ?? "unknown"}</small>
+          </div>
+          <div>
+            <span>Image tag</span>
+            <strong>:{selectedPr.imageTag ?? "unknown"}</strong>
+            <small>{formatDigest(selectedPr.release?.digest)}</small>
+          </div>
+          <div>
+            <span>Updated</span>
+            <strong>{selectedPr ? new Date(selectedPr.updatedAt).toLocaleString() : "unknown"}</strong>
+          </div>
         </div>
-        <div>
-          <span>Selected release</span>
-          <strong>{selectedRelease?.tag ?? "none"}</strong>
-          <small>{formatDigest(selectedRelease?.digest)}</small>
+      ) : null}
+      {current ? (
+        <div className="summary">
+          <div>
+            <span>Current</span>
+            <strong>{formatDigest(current.environmentImageDigest ?? "")}</strong>
+            <small>{current.status ?? "unknown"}</small>
+          </div>
         </div>
-        <div>
-          <span>ECS service</span>
-          <strong>{current?.serviceName ?? "unknown"}</strong>
-          <small>{current?.status ?? "unknown"}</small>
-        </div>
-      </div>
+      ) : null}
       {deployBlocked ? (
         <p className="warning">
-          <Shield size={16} /> {environment} deployments are admin-only. You can view {environment}{" "}
-          releases but cannot deploy them.
-        </p>
-      ) : null}
-      {releaseIneligible ? (
-        <p className="warning">
-          <Shield size={16} /> {environment} only accepts images built from a release branch (main
-          or release/*). Selected image branch: {selectedRelease?.sourceBranch ?? "unknown"}.
+          <Shield size={16} /> {environment} deployments are admin-only.
         </p>
       ) : null}
       {error ? <p className="error">{error}</p> : null}
       <button
-        disabled={!selectedRelease || loading || deployBlocked || releaseIneligible}
+        disabled={!selectedPr?.release || loading || deployBlocked}
         onClick={() => void deploy()}
       >
         {loading ? "Deploying..." : `Deploy to ${environment}`}

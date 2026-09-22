@@ -12,13 +12,18 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     name: Checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Lint Dockerfile with hadolint
         uses: hadolint/hadolint-action@v3.1.0
@@ -29,15 +34,16 @@ jobs:
         run: test -f index.html
 
   build-and-push:
-    name: Build and push image
+    name: Build, scan, push
     needs: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
@@ -45,6 +51,15 @@ jobs:
       - name: Log in to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY_URI: ${{ vars.ECR_REPOSITORY_URI }}
+        run: |
+          set -euo pipefail
+          REPO_NAME="${ECR_REPOSITORY_URI##*/}"
+          aws ecr describe-repositories --repository-names "$REPO_NAME" --region "$AWS_REGION"
 
       - name: Compute image tags
         id: tags
@@ -64,9 +79,27 @@ jobs:
             -e "s/__BUILD_DATE__/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" \
             index.html
 
+      - name: Filesystem scan (advisory)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build image
-        run: |
-          docker build -t app:local .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: app:local
+          provenance: false
+          sbom: false
 
       - name: Tag and push image
         env:
@@ -81,3 +114,8 @@ jobs:
           docker push "${ECR_REPOSITORY_URI}:${BRANCH_TAG}"
           echo "Pushed ${ECR_REPOSITORY_URI}:${SHA_TAG}"
           echo "Pushed ${ECR_REPOSITORY_URI}:${BRANCH_TAG}"
+          {
+            echo "### Pushed to ECR"
+            echo "- \`${ECR_REPOSITORY_URI}:${SHA_TAG}\`"
+            echo "- \`${ECR_REPOSITORY_URI}:${BRANCH_TAG}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

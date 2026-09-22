@@ -15,7 +15,7 @@ import {
 
 } from "@aws-sdk/client-ecs";
 import type { CurrentServiceState, DeploymentService, Environment, Release } from "@heimdall/shared";
-import { branchFromImageTags, classifyReleaseTag, environmentPointerTags } from "@heimdall/shared";
+import { classifyReleaseTag, environmentPointerTags } from "@heimdall/shared";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
 import type { Logger } from "../logger";
@@ -76,7 +76,6 @@ export class AwsRegistryAdapter implements RegistryAdapter {
         if (!digest) {
           continue;
         }
-        const sourceBranch = branchFromImageTags(detail.imageTags ?? []);
         for (const tag of detail.imageTags ?? []) {
           releases.push({
             tag,
@@ -84,7 +83,7 @@ export class AwsRegistryAdapter implements RegistryAdapter {
             pushedAt: detail.imagePushedAt?.toISOString(),
             source: classifyReleaseTag(tag),
             isEnvironmentPointer: pointerTags.has(tag),
-            sourceBranch
+            sourceBranch: tag
           });
         }
       }
@@ -126,7 +125,7 @@ export class AwsRegistryAdapter implements RegistryAdapter {
         pushedAt: detail.imagePushedAt?.toISOString(),
         source: classifyReleaseTag(tag),
         isEnvironmentPointer: pointerTags.has(tag),
-        sourceBranch: branchFromImageTags(detail.imageTags ?? [])
+        sourceBranch: tag
       };
     } catch (error) {
       if (isEcrImageNotFound(error)) {

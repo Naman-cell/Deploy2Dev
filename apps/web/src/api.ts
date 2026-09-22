@@ -3,6 +3,7 @@ import type {
   Deployment,
   DeploymentService,
   Environment,
+  OpenPullRequest,
   Release,
   Role,
   User
@@ -64,6 +65,12 @@ export const api = {
   me: (token: string) => request<User>("/me", {}, token),
   services: (token: string) =>
     request<{ services: DeploymentService[] }>("/services", {}, token).then((body) => body.services),
+  openPullRequests: (token: string, serviceId: string, environment?: Environment) =>
+    request<{ pullRequests: OpenPullRequest[] }>(
+      `/services/${serviceId}/open-prs${environment ? `?environment=${environment}` : ""}`,
+      {},
+      token
+    ).then((body) => body.pullRequests),
   releases: (token: string, serviceId: string, environment: Environment) =>
     request<{ releases: Release[] }>(
       `/services/${serviceId}/releases?environment=${environment}`,
@@ -71,11 +78,7 @@ export const api = {
       token
     ).then((body) => body.releases),
   current: (token: string, serviceId: string, environment: Environment) =>
-    request<CurrentServiceState>(
-      `/services/${serviceId}/current?environment=${environment}`,
-      {},
-      token
-    ),
+    request<CurrentServiceState>(`/services/${serviceId}/current?environment=${environment}`, {}, token),
   deployments: (token: string) =>
     request<{ deployments: Deployment[] }>("/deployments", {}, token).then((body) => body.deployments),
   deployment: (token: string, deploymentId: string) =>
